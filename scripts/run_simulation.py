@@ -84,6 +84,8 @@ def main():
     schedule_settings = diffusion_settings(config, default_schedule="linear_power")
     from training_input_dropout import input_dropout_options
     dropout_options = input_dropout_options(config)
+    from training_ema import ema_options
+    ema_settings = ema_options(config)
     s4_probability = s4_dropout_options(config)
     output = args.output_dir.resolve()
     output.mkdir(parents=True, exist_ok=False)
@@ -104,7 +106,7 @@ def main():
                     ROOT / 'watchsleep_loader.py', ROOT / 'dataset_config.json', ROOT / 'cuda_runtime.py',
                     ROOT / 'third_party/WatchSleepNet/data_setup.py', ROOT / 'epoch_validation.py',
                     ROOT / 'validation_metrics.py', ROOT / 'validation_sampling.py', ROOT / 'validation_artifacts.py', ROOT / 'window_config.py',
-                    ROOT / 'scripts/evaluate_original_sampler.py', ROOT / 'diffusion_schedule.py', ROOT / 'missing_data.py', ROOT / 'signal_normalization.py', ROOT / 'training_input_dropout.py', ROOT / 's4_dropout_config.py', ROOT / 'host_runtime.py']
+                    ROOT / 'scripts/evaluate_original_sampler.py', ROOT / 'diffusion_schedule.py', ROOT / 'missing_data.py', ROOT / 'signal_normalization.py', ROOT / 'training_input_dropout.py', ROOT / 'training_ema.py', ROOT / 'ibi_structure_metrics.py', ROOT / 's4_dropout_config.py', ROOT / 'host_runtime.py']
     hashes = {str(p.relative_to(ROOT)): sha(p) for p in source_paths}
     command = [filename, '-d', args.dataset, '-window_size', str(dimensions['window_size']), '-s4_lmax', str(dimensions['window_size']),
                '-stride', str(EPOCH_SAMPLES), '-batch_size', str(args.batch_size), '-epochs', str(args.epochs),
@@ -119,6 +121,7 @@ def main():
                     device=str(device), cuda_environment=cuda_environment(device), window_settings=dimensions,
                     host_thread_runtime=configure_host_threads(),
                     diffusion_settings=schedule_settings, training_input_dropout=dict(options=dropout_options),
+                    training_ema=dict(options=ema_settings),
                     s4_dropout=s4_probability,
                     observer='sys.settrace reads current loss and completed updates only; no training hooks or replacements',
                     observer_sha256=sha(Path(__file__)), training_args=None,
@@ -200,6 +203,7 @@ def main():
     assert pending is None
     validation = training_state['validator'].summary()
     dropout_report = training_state['training_input_dropout'].report()
+    ema_report = training_state['training_ema'].report()
     del training_state  # Release the training model/optimizer before loading the checkpoint audit.
     completion = validate_completion(validation, steps, manifest['batches_per_epoch'], args.epochs)
     assert hashes == {str(p.relative_to(ROOT)): sha(p) for p in source_paths}
@@ -217,6 +221,7 @@ def main():
                   mean_loss=weighted_loss(rows), loss_aggregation=('observed_point_weighted_mean'
                       if manifest['missing_value_policy'] == 'masked' else 'sample_weighted_mean'),
                   missing_value_policy=manifest['missing_value_policy'], training_input_dropout=dropout_report,
+                  training_ema=ema_report,
                   s4_dropout=s4_probability, s4_dropout_runtime=manifest['s4_dropout_runtime'],
                   validation=validation, all_losses_finite=True, checkpoint_all_finite=True,
                   checkpoint=str(checkpoint_path), checkpoint_sha256=sha(checkpoint_path),

@@ -111,10 +111,18 @@ def _validate_run(manifest, configuration, workspace):
     return identity
 
 
-def freeze_configuration(sweep_root, configuration, output_dir, attempts=3, retry_seconds=.2):
-    """Capture a consistent live best, without touching the training directory."""
+def freeze_configuration(sweep_root, configuration, output_dir, attempts=3, retry_seconds=.2,
+                         checkpoint_epoch=None):
+    """Capture a consistent live best, without touching the training directory.
+
+    checkpoint_epoch selects validation/epoch_NNNN/model.pth instead of the
+    live best. That file exists only for runs trained with
+    validation.save_epoch_checkpoints=true; it is never inferred or rebuilt.
+    """
     if type(attempts) is not int or attempts < 1 or retry_seconds < 0:
         raise ValueError('Snapshot retry bounds must be nonnegative with positive attempts')
+    if checkpoint_epoch is not None and (type(checkpoint_epoch) is not int or checkpoint_epoch < 1):
+        raise ValueError('checkpoint_epoch must be a positive integer')
     # Reuse the sweep's canonical label validation, after host policy setup.
     from scripts.run_all88_s092_sweep import validate_configuration
     configuration = validate_configuration(configuration)
@@ -132,7 +140,22 @@ def freeze_configuration(sweep_root, configuration, output_dir, attempts=3, retr
             summary_bytes = summary_path.read_bytes()
             manifest = json.loads(manifest_bytes.decode('utf-8-sig'))
             validation = json.loads(summary_bytes.decode('utf-8-sig'))
-            best = validation.get('best_checkpoints', {}).get('kl')
+            if checkpoint_epoch is not None:
+                epoch_dir = training / 'validation' / f'epoch_{checkpoint_epoch:04d}'
+                weights_path = epoch_dir / 'model.pth'
+                metrics = json.loads((epoch_dir / 'metrics.json').read_bytes().decode('utf-8-sig'))
+                recorded = metrics.get('epoch_checkpoint')
+                if metrics.get('epoch') != checkpoint_epoch or not isinstance(recorded, dict):
+                    raise ValueError(f'Epoch {checkpoint_epoch} has no saved checkpoint; train with '
+                                     'validation.save_epoch_checkpoints=true')
+                value = metrics.get('aggregate', {}).get('gaussian_kl_real_to_generated')
+                best = dict(epoch=checkpoint_epoch, metric='gaussian_kl_real_to_generated',
+                            selection_rule='current_kl', value=value,
+                            raw_metrics={'gaussian_kl_real_to_generated': value},
+                            checkpoint=str(weights_path), checkpoint_sha256=recorded.get('sha256'),
+                            explicit_epoch=True)
+            else:
+                best = validation.get('best_checkpoints', {}).get('kl')
             if not isinstance(best, dict):
                 raise ValueError('No best KL checkpoint has been recorded yet')
             epoch, value = best.get('epoch'), best.get('value')
@@ -147,7 +170,9 @@ def freeze_configuration(sweep_root, configuration, output_dir, attempts=3, retr
             weight_bytes = weights_path.read_bytes()
             digest = hashlib.sha256(weight_bytes).hexdigest()
             if digest != best.get('checkpoint_sha256'):
-                raise ValueError('Live best checkpoint SHA256 differs from validation summary')
+                raise ValueError('Live best checkpoint SHA256 differs from validation summary'
+                                 if checkpoint_epoch is None else
+                                 'Epoch checkpoint SHA256 differs from its metrics.json record')
             if summary_bytes != summary_path.read_bytes() or manifest_bytes != manifest_path.read_bytes():
                 raise ValueError('Live best metadata changed while taking snapshot')
             break
@@ -159,7 +184,9 @@ def freeze_configuration(sweep_root, configuration, output_dir, attempts=3, retr
     identity = _validate_run(manifest, configuration, workspace)
     snapshot_dir = output / 'checkpoint_snapshot'
     snapshot_dir.mkdir(parents=True, exist_ok=False)
-    checkpoint = snapshot_dir / 'best_kl_model.pth'
+    checkpoint_kind = 'best_kl' if checkpoint_epoch is None else f'epoch_{checkpoint_epoch:04d}'
+    checkpoint = snapshot_dir / ('best_kl_model.pth' if checkpoint_epoch is None
+                                 else f'{checkpoint_kind}_model.pth')
     checkpoint.write_bytes(weight_bytes)
     selected_path = snapshot_dir / 'best_snapshot_manifest.json'
     selected = deepcopy(manifest)
@@ -177,7 +204,7 @@ def freeze_configuration(sweep_root, configuration, output_dir, attempts=3, retr
     context = dict(arm='minmax' if configuration['normalization_range'][0] == -1 else 'minmax01',
         configuration=configuration, root=str(run.parent), workspace=str(workspace),
         manifest_path=str(selected_path), manifest=selected, identity=identity, epoch=epoch,
-        checkpoint=str(checkpoint), checkpoint_sha256=digest,
+        checkpoint=str(checkpoint), checkpoint_sha256=digest, checkpoint_kind=checkpoint_kind,
         best_manifest_sha256=sha256(selected_path), source_checks=checks)
     save_json(output/'context.json', context)
     return context
@@ -342,6 +369,9 @@ def main(argv=None):
     parser.add_argument('--sampling-batch-size', type=int,
                         help='Number of windows per GPU batch in --all-windows mode (default: 8)')
     parser.add_argument('--seed', type=int, default=20261103)
+    parser.add_argument('--checkpoint-epoch', type=int,
+                        help='Sample validation/epoch_NNNN/model.pth instead of the live best '
+                             '(requires runs trained with validation.save_epoch_checkpoints=true)')
     parser.add_argument('--threads', type=int, default=4)
     parser.add_argument('--check-only', action='store_true')
     parser.add_argument('--worker', choices=('preflight', 'sample'), help=argparse.SUPPRESS)
@@ -353,6 +383,8 @@ def main(argv=None):
         parser.error('--window-stride-seconds requires --all-windows')
     if cli.window_stride_seconds is None:
         cli.window_stride_seconds = 30
+    if cli.checkpoint_epoch is not None and cli.checkpoint_epoch < 1:
+        parser.error('--checkpoint-epoch must be a positive epoch number')
     if cli.sampling_batch_size is not None and (not cli.all_windows or cli.sampling_batch_size < 1):
         parser.error('--sampling-batch-size requires --all-windows and a positive size')
     cli.sampling_batch_size = cli.sampling_batch_size or 8
@@ -403,6 +435,8 @@ def main(argv=None):
         training_executed=False, sampling_performed=False, independent_windows=True,
         real_ibi_used_as_input=False, overlap_samples=0, evaluation_is_held_out=False,
         host_thread_runtime=policy, snapshots={}, check_only=cli.check_only,
+        checkpoint_selection=('live best (minimum current KL)' if cli.checkpoint_epoch is None
+                              else f'explicit saved epoch {cli.checkpoint_epoch}'),
         script_sha256=sha256(__file__))
     if cli.all_windows:
         status.update(window_selection=('all_nonoverlapping_validation_windows' if cli.window_stride_seconds == 120
@@ -417,7 +451,7 @@ def main(argv=None):
         contexts = []
         for row in configurations:
             destination = output/f'config_{row["id"]}'
-            context = freeze_configuration(sweep, row, destination)
+            context = freeze_configuration(sweep, row, destination, checkpoint_epoch=cli.checkpoint_epoch)
             contexts.append(context)
             status['snapshots'][str(row['id'])] = dict(epoch=context['epoch'],
                 checkpoint_sha256=context['checkpoint_sha256'], snapshot=context['manifest']['snapshot'])

@@ -450,7 +450,7 @@ def worker_sample(context, output_dir, seed, threads, *, batch_size=None):
         np.savez_compressed(stream, generated_ibi_seconds=np.concatenate(seconds_parts).reshape(-1),
                             generated_normalized=np.concatenate(normalized_parts).reshape(-1), seed=np.array(seed),
                             window_size=np.array(args.window_size), start_samples=starts)
-    report = dict(status="completed", epoch=context["epoch"], checkpoint_kind="best_kl",
+    report = dict(status="completed", epoch=context["epoch"], checkpoint_kind=context.get("checkpoint_kind", "best_kl"),
         checkpoint_sha256=context["checkpoint_sha256"], best_manifest_sha256=context["best_manifest_sha256"],
         checkpoint_load=loaded, seed=seed, batch_size=batch_size, windows=windows,
         sampling=sampling, metrics=metrics, metric_aggregation="equal-weight mean over model windows",

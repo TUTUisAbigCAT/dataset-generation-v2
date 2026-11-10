@@ -11,6 +11,7 @@ import torch
 
 from epoch_validation import weighted_loss
 from scripts.verify_upstream_boundary import expected_training_source
+from training_ema import TrainingEMA
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -54,6 +55,7 @@ class TrainingReportingTests(unittest.TestCase):
                      diffusion_config={"T": 2, "alpha_bars": torch.tensor([[.9], [.8]])},
                      non_hier_cols=torch.tensor([0]), randint=torch.randint,
                      normal=torch.normal, sqrt=torch.sqrt, training_input_dropout=lambda batch: batch,
+                     training_ema=TrainingEMA(model, 0.),
                      validator=SimpleNamespace(run=validate, should_stop=False))
         with torch.random.fork_rng(), contextlib.redirect_stdout(io.StringIO()):
             exec(compile(module, "actual_epoch_loop", "exec"), scope)

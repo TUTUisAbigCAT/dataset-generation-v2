@@ -439,6 +439,9 @@ class Preprocessor:
             subjects.append(dict(filename=filename, candidates=len(candidates), selected_starts=starts))
         self.validation_selection = dict(window_size=self.window_size, stride=stride,
             windows_per_subject=int(windows_per_subject), preferred_second_start=45000,
+            # preferred_second_start is a legacy name kept for recorded provenance:
+            # 45000 is a sample index (30 minutes at 25 Hz), not seconds.
+            preferred_start_sample=45000, preferred_start_seconds=45000 // FS,
             policy="first legal; distinct nearest 45000; additional starts in order",
             selected=[dict(filename=name, start=start) for name, start in selected],
             subjects=subjects, excluded=excluded)

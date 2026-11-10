@@ -14,6 +14,7 @@ from cuda_runtime import require_cuda, assert_cuda_model
 from epoch_validation import create_epoch_validator
 from missing_data import masked_noise_mse
 from training_input_dropout import create_training_input_dropout
+from training_ema import create_training_ema
 
 if __name__ == "__main__":
     np.random.seed(42)
@@ -75,6 +76,7 @@ if __name__ == "__main__":
     non_hier_cols = torch.as_tensor(non_hier_cols, dtype=torch.long, device=device)
     training_input_dropout = create_training_input_dropout(device)
     validator = create_epoch_validator(preprocessor, args, model, diffusion_config, device)
+    training_ema = create_training_ema(model)
     """TRAINING"""
     for epoch in range(args.epochs):
         total_loss = 0.0
@@ -114,9 +116,10 @@ if __name__ == "__main__":
             total_loss += loss_total
             total_samples += loss_weight
             optimizer.step()
+            training_ema.update(model)
         mean_loss = total_loss / total_samples
         print(f"epoch: {epoch + 1}, mean_loss: {mean_loss}", flush=True)
-        validator.run(epoch + 1, model, mean_loss)
+        validator.run(epoch + 1, training_ema.evaluation_model(model), mean_loss)
         if validator.should_stop:
             break
     path = f'saved_models/{args.dataset}/'

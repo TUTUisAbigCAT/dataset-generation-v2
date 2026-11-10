@@ -170,6 +170,52 @@ class SweepBestBindingTests(unittest.TestCase):
         self.assertEqual(context['epoch'], 3)
         self.assertEqual(context['checkpoint_sha256'], digest(record['checkpoint']))
 
+    def write_epoch_checkpoint(self, epoch, *, kl=2.5, payload=None, record_digest=None):
+        epoch_dir = self.records[0]['training'] / 'validation' / f'epoch_{epoch:04d}'
+        epoch_dir.mkdir(parents=True, exist_ok=True)
+        weights = epoch_dir / 'model.pth'
+        weights.write_bytes(payload or f'ARTIFICIAL BYTES, NOT A MODEL: epoch {epoch}'.encode())
+        write_json(epoch_dir / 'metrics.json', dict(
+            status='completed', epoch=epoch, aggregate={'gaussian_kl_real_to_generated': kl},
+            epoch_checkpoint=dict(path=str(weights), sha256=record_digest or digest(weights))))
+        return weights
+
+    def test_explicit_saved_epoch_is_frozen_instead_of_live_best(self):
+        weights = self.write_epoch_checkpoint(2, kl=2.5)
+        destination = self.output / 'config_0_epoch2'
+        destination.mkdir()
+        context = driver.freeze_configuration(self.sweep, GRID[0], destination, attempts=1,
+                                              retry_seconds=0, checkpoint_epoch=2)
+        copied = Path(context['checkpoint'])
+        self.assertEqual(copied.name, 'epoch_0002_model.pth')
+        self.assertEqual(copied.read_bytes(), weights.read_bytes())
+        self.assertEqual(context['epoch'], 2)
+        self.assertEqual(context['checkpoint_kind'], 'epoch_0002')
+        self.assertEqual(context['manifest']['checkpoint_selection']['value'], 2.5)
+        self.assertTrue(context['manifest']['checkpoint_selection']['explicit_epoch'])
+        self.assertEqual(driver.load_snapshot_context(destination / 'context.json')['epoch'], 2)
+
+    def test_explicit_epoch_requires_a_recorded_matching_checkpoint(self):
+        cases = [(3, dict()), (2, dict(record_digest='0' * 64))]
+        for epoch, options in cases:
+            if epoch == 2:
+                self.write_epoch_checkpoint(epoch, **options)
+            destination = self.output / f'bad_epoch_{epoch}'
+            destination.mkdir()
+            with self.subTest(epoch=epoch), self.assertRaises(RuntimeError):
+                driver.freeze_configuration(self.sweep, GRID[0], destination, attempts=1,
+                                            retry_seconds=0, checkpoint_epoch=epoch)
+            self.assertFalse((destination / 'checkpoint_snapshot').exists())
+        self.write_epoch_checkpoint(9)
+        destination = self.output / 'beyond_completed'
+        destination.mkdir()
+        with self.assertRaises(RuntimeError):  # completed_epochs is 4 in this fixture
+            driver.freeze_configuration(self.sweep, GRID[0], destination, attempts=1,
+                                        retry_seconds=0, checkpoint_epoch=9)
+        for invalid in (0, -1, True, 1.5):
+            with self.subTest(invalid=invalid), self.assertRaises(ValueError):
+                driver.freeze_configuration(self.sweep, GRID[0], self.output, checkpoint_epoch=invalid)
+
     def test_missing_best_never_falls_back_to_final(self):
         record = self.records[0]
         record['checkpoint'].unlink()

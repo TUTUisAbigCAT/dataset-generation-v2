@@ -145,7 +145,8 @@ def validation_options(config):
     values = config.get("validation", {})
     if not isinstance(values, dict):
         raise ValueError("validation must be a JSON object")
-    unknown = set(values) - (set(DEFAULT_VALIDATION) | {"reference_mask_policy", "save_artifacts"})
+    unknown = set(values) - (set(DEFAULT_VALIDATION) | {"reference_mask_policy", "save_artifacts",
+                                                       "save_epoch_checkpoints"})
     if unknown:
         raise ValueError(f"Unknown validation options: {sorted(unknown)}")
     result = {**DEFAULT_VALIDATION, **values}
@@ -170,6 +171,8 @@ def validation_options(config):
         result.pop("reference_mask_policy", None)
     if 'save_artifacts' in result and not isinstance(result['save_artifacts'], bool):
         raise ValueError('validation.save_artifacts must be boolean')
+    if 'save_epoch_checkpoints' in result and not isinstance(result['save_epoch_checkpoints'], bool):
+        raise ValueError('validation.save_epoch_checkpoints must be boolean')
     return result
 
 
@@ -413,6 +416,7 @@ class EpochValidator:
         generated_samples = 0
         generated_nonpositive = torch.zeros((), dtype=torch.int64, device=self.device)
         sampler_reports = []
+        structure_parts = []
         artifact_waveforms, artifact_statistics = [], defaultdict(list)
         for start in range(0, len(self.windows), self.options["batch_size"]):
             clean = self.windows[start:start+self.options["batch_size"]].to(self.device)
@@ -436,6 +440,7 @@ class EpochValidator:
             # hide nonpositive generated values. These do not select checkpoints.
             generated_samples += generated_seconds.numel()
             generated_nonpositive += (generated_seconds <= 0).sum()
+            structure_parts.append(generated_seconds.detach().cpu().numpy())
             sampler_reports.append(metadata)
         metrics = accumulator.finalize()
         nonpositive_samples = int(generated_nonpositive)
@@ -443,6 +448,11 @@ class EpochValidator:
             generated_samples=generated_samples,
             generated_nonpositive_samples=nonpositive_samples,
             generated_nonpositive_fraction=nonpositive_samples/generated_samples)
+        # Diagnostics only (host copy of the generated windows); never used for selection.
+        from ibi_structure_metrics import summarize_windows
+        metrics["diagnostics"]["ibi_structure"] = summarize_windows(
+            np.concatenate(structure_parts, axis=0), self.reference.numpy(),
+            None if self.reference_mask is None else self.reference_mask.numpy())
         if self.save_artifacts:
             metrics['_artifact_payload'] = dict(
                 generated_seconds=np.concatenate(artifact_waveforms, axis=0),
@@ -479,6 +489,16 @@ class EpochValidator:
         with preserve_random_state(self.device):
             metrics, copied, sampler_reports = self._generate(training_model)
         artifacts = self.save_generation_artifacts(epoch_dir, metrics, epoch)
+        epoch_checkpoint = None
+        if self.options.get("save_epoch_checkpoints", False):
+            # The exact evaluated weights (the EMA copy when training_ema is
+            # active), so any epoch can be re-evaluated later with other seeds.
+            epoch_checkpoint = epoch_dir / "model.pth"
+            temporary = epoch_checkpoint.with_suffix(".pth.tmp")
+            torch.save(training_model.state_dict(), temporary)
+            temporary.replace(epoch_checkpoint)
+            epoch_checkpoint = dict(path=str(epoch_checkpoint),
+                                    sha256=hashlib.sha256(epoch_checkpoint.read_bytes()).hexdigest())
         aggregate = metrics["aggregate"]
         stopping = self.early_stopping.update(epoch, aggregate)
         self.should_stop = stopping["stopped_early"]
@@ -511,6 +531,8 @@ class EpochValidator:
                       sampling=sampler_reports, early_stopping=stopping)
         if artifacts is not None:
             report['artifacts'] = artifacts
+        if epoch_checkpoint is not None:
+            report['epoch_checkpoint'] = epoch_checkpoint
         _save_json(epoch_dir / "metrics.json", report)
         self.reports.append(report)
         # Rewriting a short history avoids partial CSV rows after a failed append.

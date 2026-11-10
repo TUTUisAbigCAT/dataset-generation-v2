@@ -260,7 +260,34 @@ def expected_core_source(name, original):
     return result
 
 
-def expected_training_source(original, *, include_input_dropout=True):
+# Four exact opt-in EMA additions on top of the input-dropout edits. The live
+# model, optimizer step, loss, forward-noising draws and the final saved model
+# are unchanged; decay=0 (default) makes every added call an exact no-op.
+EMA_EDITS = [
+    ("from training_input_dropout import create_training_input_dropout",
+     "from training_input_dropout import create_training_input_dropout\n"
+     "from training_ema import create_training_ema"),
+    ("    validator = create_epoch_validator(preprocessor, args, model, diffusion_config, device)",
+     "    validator = create_epoch_validator(preprocessor, args, model, diffusion_config, device)\n"
+     "    training_ema = create_training_ema(model)"),
+    ("            optimizer.step()",
+     "            optimizer.step()\n"
+     "            training_ema.update(model)"),
+    ("        validator.run(epoch + 1, model, mean_loss)",
+     "        validator.run(epoch + 1, training_ema.evaluation_model(model), mean_loss)"),
+]
+
+
+def expected_training_source(original, *, include_input_dropout=True, include_ema=None):
+    """Upstream source plus the exact allowlisted edits.
+
+    include_ema defaults to include_input_dropout: the EMA edits are anchored on
+    the input-dropout additions, so they are only defined on top of them.
+    """
+    if include_ema is None:
+        include_ema = include_input_dropout
+    if include_ema and not include_input_dropout:
+        raise ValueError("EMA edits are defined only on top of the input-dropout edits")
     newline = b"\r\n" if b"\r\n" in original else b"\n"
     start = original.index(b"    df = preprocessor.df_cleaned")
     end = original.index(b"    model = fetchModel", start)
@@ -268,6 +295,8 @@ def expected_training_source(original, *, include_input_dropout=True):
     edits = CUDA_DEVICE_EDITS + DIFFUSION_SCHEDULE_EDITS + EPOCH_REPORTING_EDITS + EARLY_STOPPING_EDITS + MISSING_DATA_EDITS
     if include_input_dropout:
         edits = edits + TRAINING_INPUT_DROPOUT_EDITS
+    if include_ema:
+        edits = edits + EMA_EDITS
     for before, after in edits:
         before_bytes = before.encode().replace(b"\n", newline)
         after_bytes = after.encode().replace(b"\n", newline)
@@ -276,12 +305,47 @@ def expected_training_source(original, *, include_input_dropout=True):
     return result
 
 
-def remove_training_input_dropout_edits(source):
-    """Reverse only the three exact additions, with full-source identity checks.
+def _reverse_exact_edits(source, edits, newline, label):
+    result = source
+    for before, after in reversed(edits):
+        before_bytes = before.encode().replace(b"\n", newline)
+        after_bytes = after.encode().replace(b"\n", newline)
+        if result.count(after_bytes) != 1:
+            raise ValueError(f"Training {label} reversal is ambiguous")
+        result = result.replace(after_bytes, before_bytes, 1)
+    return result
 
-    The previous exact adapter source is also accepted unchanged. Partial,
-    duplicated, rewritten or unrelated modifications are rejected, even if
-    stripping an augmentation-looking line would otherwise produce a match.
+
+def remove_training_ema_edits(source):
+    """Reverse only the four exact EMA additions, with full-source identity checks.
+
+    A source without EMA edits (input-dropout adapter or the earlier prior) is
+    returned unchanged. Partial, duplicated or rewritten EMA edits are rejected.
+    """
+    if not isinstance(source, bytes):
+        raise TypeError("Training source must be bytes")
+    original = (UPSTREAM / "training_wavestitch.py").read_bytes()
+    without_ema = expected_training_source(original, include_input_dropout=True, include_ema=False)
+    prior = expected_training_source(original, include_input_dropout=False)
+    if source in (without_ema, prior):
+        return source
+    if source != expected_training_source(original):
+        raise ValueError("Training source differs beyond the four exact EMA additions")
+    newline = b"\r\n" if b"\r\n" in original else b"\n"
+    result = _reverse_exact_edits(source, EMA_EDITS, newline, "EMA")
+    if result != without_ema:
+        raise ValueError("Training source changed beyond the authorized EMA additions")
+    return result
+
+
+def remove_training_input_dropout_edits(source):
+    """Reverse the optional training additions (EMA, then input dropout).
+
+    Accepts exactly three sources: the current adapter (input dropout + EMA),
+    the previous adapter (input dropout only) and the prior adapter (neither),
+    and returns the prior adapter. Partial, duplicated, rewritten or unrelated
+    modifications are rejected, even if stripping an augmentation-looking line
+    would otherwise produce a match.
     """
     if not isinstance(source, bytes):
         raise TypeError("Training source must be bytes")
@@ -289,16 +353,13 @@ def remove_training_input_dropout_edits(source):
     without_dropout = expected_training_source(original, include_input_dropout=False)
     if source == without_dropout:
         return source
-    if source != expected_training_source(original):
+    source = remove_training_ema_edits(source)
+    if source == without_dropout:
+        return source
+    if source != expected_training_source(original, include_ema=False):
         raise ValueError("Training source differs beyond the three exact input-dropout additions")
     newline = b"\r\n" if b"\r\n" in original else b"\n"
-    result = source
-    for before, after in reversed(TRAINING_INPUT_DROPOUT_EDITS):
-        before_bytes = before.encode().replace(b"\n", newline)
-        after_bytes = after.encode().replace(b"\n", newline)
-        if result.count(after_bytes) != 1:
-            raise ValueError("Training input-dropout reversal is ambiguous")
-        result = result.replace(after_bytes, before_bytes, 1)
+    result = _reverse_exact_edits(source, TRAINING_INPUT_DROPOUT_EDITS, newline, "input-dropout")
     if result != without_dropout:
         raise ValueError("Training source changed beyond the authorized input augmentation")
     return result
@@ -370,12 +431,12 @@ def main():
         assert (ROOT / name).read_bytes() == expected_core_source(name, (UPSTREAM / name).read_bytes()), f"Imported core exceeds exact correction allowlist: {name}"
     original = (UPSTREAM / "training_wavestitch.py").read_bytes()
     actual = (ROOT / "training_wavestitch.py").read_bytes()
-    assert actual == expected_training_source(original), "Training modifications exceeded the exact data/device/reporting/input-augmentation allowlist"
+    assert actual == expected_training_source(original), "Training modifications exceeded the exact data/device/reporting/input-augmentation/EMA allowlist"
 
     # Reverse exactly the reviewed device/reporting edits to verify the unchanged training
     # algorithm. The removed mask conversion needs its original insertion point.
     normalized = actual.decode().replace("\r\n", "\n")
-    for before, after in reversed(CUDA_DEVICE_EDITS + DIFFUSION_SCHEDULE_EDITS + EPOCH_REPORTING_EDITS + EARLY_STOPPING_EDITS + MISSING_DATA_EDITS + TRAINING_INPUT_DROPOUT_EDITS):
+    for before, after in reversed(CUDA_DEVICE_EDITS + DIFFUSION_SCHEDULE_EDITS + EPOCH_REPORTING_EDITS + EARLY_STOPPING_EDITS + MISSING_DATA_EDITS + TRAINING_INPUT_DROPOUT_EDITS + EMA_EDITS):
         if not after:
             anchor = "            conditional_mask[:, :, non_hier_cols] = 0\n"
             assert normalized.count(anchor) == 1
@@ -408,12 +469,15 @@ def main():
         window_configuration_sha256=sha(ROOT / "window_config.py"),
         diffusion_schedule_adapter_sha256=sha(ROOT / "diffusion_schedule.py"),
         cuda_runtime_sha256=sha(ROOT / "cuda_runtime.py"),
-        exact_training_edit="Data/window preparation, schedule/device/reporting edits, opt-in observed-point epsilon-MSE and opt-in post-noising IBI input dropout; network unchanged",
+        exact_training_edit="Data/window preparation, schedule/device/reporting edits, opt-in observed-point epsilon-MSE, opt-in post-noising IBI input dropout and opt-in evaluation EMA; network unchanged",
         missing_data_edits=[dict(before=before, after=after) for before, after in MISSING_DATA_EDITS],
         missing_data_adapter_sha256=sha(ROOT / "missing_data.py"),
         training_input_dropout_edits=[dict(before=before, after=after) for before, after in TRAINING_INPUT_DROPOUT_EDITS],
         training_input_dropout_adapter_sha256=sha(ROOT / "training_input_dropout.py"),
         training_input_dropout_supported=True,
+        training_ema_edits=[dict(before=before, after=after) for before, after in EMA_EDITS],
+        training_ema_adapter_sha256=sha(ROOT / "training_ema.py"),
+        optional_training_ema="Opt-in parameter EMA (training_ema.decay); used only for epoch validation and validator checkpoints; decay=0 exact no-op",
         training_input_dropout_activation="Explicit training_input_dropout.probability in frozen JSON; source audit does not run training",
         optional_training_input_dropout="Post-noising IBI channel only, normalized zero fill, no kept-value scaling; independent device generator; targets/loss unchanged; p=0 exact identity with no random draws",
         model_input_distribution_changes_when_dropout_enabled=True,

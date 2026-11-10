@@ -24,6 +24,7 @@ import torch
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
+from training_ema import TrainingEMA
 from training_input_dropout import input_dropout_options, create_training_input_dropout, TrainingInputDropout
 from scripts import run_dreamt
 from scripts.verify_upstream_boundary import (
@@ -141,7 +142,7 @@ class InputDropoutTests(unittest.TestCase):
             with mock.patch.dict(os.environ,{"DREAMT_CONFIG_PATH":str(path.with_name("absent.json"))}), self.assertRaises(FileNotFoundError):
                 create_training_input_dropout("cpu")
 
-    def run_actual_loop(self, source, probability):
+    def run_actual_loop(self, source, probability, ema_decay=0.):
         class Model(torch.nn.Module):
             def __init__(self):
                 super().__init__()
@@ -172,7 +173,8 @@ class InputDropoutTests(unittest.TestCase):
                 device=torch.device("cpu"),args=SimpleNamespace(epochs=2),dataloader=dataloader,
                 diffusion_config={"T":3,"alpha_bars":torch.tensor([[.9],[.5],[.1]])},
                 non_hier_cols=torch.tensor([0]),randint=randint,normal=normal,sqrt=torch.sqrt,
-                training_input_dropout=adapter,validator=SimpleNamespace(run=lambda *args:None,should_stop=False))
+                training_input_dropout=adapter,training_ema=TrainingEMA(model,ema_decay),
+                validator=SimpleNamespace(run=lambda *args:None,should_stop=False))
             exec(training_loop(source),namespace)
             return dict(parameters={key:value.detach().clone() for key,value in model.state_dict().items()},
                 noise=noise,times=times,inputs=model.inputs,losses=losses,targets=targets,
@@ -262,6 +264,7 @@ class InputDropoutTests(unittest.TestCase):
                         device=torch.device("cpu"),args=args,dataloader=batches,
                         diffusion_config=build_diffusion_config(args),non_hier_cols=torch.tensor([0]),
                         randint=torch.randint,normal=torch.normal,sqrt=torch.sqrt,training_input_dropout=adapter,
+                        training_ema=TrainingEMA(model,0.),
                         validator=SimpleNamespace(run=lambda *args:None,should_stop=False))
                     exec(training_loop((ROOT/"training_wavestitch.py").read_bytes()),scope)
                     hook.remove()
