@@ -6,6 +6,23 @@
 
 网络结构、优化器、epsilon MSE 损失和训练更新公式沿用固定上游版本；本地 S4 慢速 Cauchy 回退计算补齐遗漏的共轭项。新训练通过独立的 `diffusion_schedule.py` 将200步日程的终点累计 alpha 调整到约 `1e-8`，使训练末态更接近采样使用的标准高斯起点；训练与推理使用同一记录日程。采样运行时另修正一处后验噪声系数：使用后验方差的平方根作为标准差；固定上游源码及 `training_utils.py` 不改写。在 `de30ac2` 的数据与 CUDA 设备适配基础上，增加每轮生成验证、loss 数值平均及早停；本地改动纳入源码检查器的逐项白名单。上游来源和许可证说明见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
 
+## v2 修订（dataset-generation-v2）
+
+本仓库在原仓库 `TUTUisAbigCAT/dataset-generation`（commit `ce31920`）的基础上，按 [代码修改指南](docs/代码修改指南.md) 修改，完整变更见 [CHANGES_v2.md](CHANGES_v2.md)。**所有新功能默认关闭**，`dataset_config.json` 与旧运行逐位一致；新功能集中在 `configs/dreamt_recommended.json`：
+
+- **评估用 EMA**：`training_ema.decay`（推荐 0.9999）。验证和验证器保存的 checkpoint 使用权重的指数滑动平均；训练本身不变。
+- **逐轮 checkpoint**：`validation.save_epoch_checkpoints: true` 时保存 `validation/epoch_NNNN/model.pth`；`compare_s092_sweep_best.py --checkpoint-epoch N` 可用任意 seed 复评任意一轮。
+- **整夜生成的缺失标记**：`generate_night.py --missing-threshold-seconds 0.2` 把模型生成的 0 附近那一簇值写成 DREAMT 缺失标记 0（默认关闭，仍对负值报错）。
+- **阶梯结构诊断**：每轮 `metrics.json` 的 `diagnostics.ibi_structure` 报告 Wasserstein-1 与 25 Hz 平台结构，只做诊断、不参与选模型。
+- **留出受试者**：`scripts/make_holdout_split.py` 生成 S092 只在验证集中的划分和配置。
+- 修复了原仓库测试套件中 14 个已有的失败（测试未随代码更新），统一了环境说明。
+
+推荐配置的重训：
+
+```bash
+sbatch submit_recommended.sh   # EMA + masked + S4 dropout 0.03 + 关闭输入 dropout，100 epochs
+```
+
 ## 缺失零值训练对照
 
 新增可选 `missing_value_policy: "masked"`：在标准化前按原始 IBI `>0` 建立观测掩码，训练集 scaler 排除缺失零值，输入缺失位置使用标准化空间的 0 占位，epsilon MSE 仅对观测点求平均。S4 网络与输入通道不变。默认 `preserve` 保持下面描述的旧全点训练行为；零占位输入仍可能通过时序网络影响邻近预测，不能声称屏蔽损失就恢复了真实缺失值。
@@ -20,17 +37,17 @@ sbatch submit_missing_value_ablation.sh
 ## 安装
 
 ```bash
-git clone https://github.com/TUTUisAbigCAT/dataset-generation.git
-cd dataset-generation
+git clone https://github.com/TUTUisAbigCAT/dataset-generation-v2.git
+cd dataset-generation-v2
 ```
 
-使用 Python 3.12。`requirement.txt` 与 `requirements_cuda.txt` 固定 PyTorch 2.2.2 + CUDA 12.1 构建及其余依赖；来源参照 [PyTorch 官方历史版本说明](https://docs.pytorch.org/get-started/previous-versions/#v2-2-2)。需要可用的 NVIDIA GPU 与兼容驱动。若采用集群提供的 CUDA wheel，应记录实际版本并重新运行检查。
+使用 Python 3.11（与 Fir 上 `module load python/3.11` 及运行记录中的 Python 3.11.5 一致）。`requirements_cuda.txt` 固定 PyTorch 2.3.1 + CUDA 12.1 构建及其余依赖（运行记录中的实际版本为 torch 2.3.1），`requirement.txt` 只是引用它；来源参照 [PyTorch 官方历史版本说明](https://docs.pytorch.org/get-started/previous-versions/#v231)。需要可用的 NVIDIA GPU 与兼容驱动。若采用集群提供的 CUDA wheel，应记录实际版本并重新运行检查。
 
 Linux / Fir（在克隆后的项目根目录）：
 
 ```bash
-python3.12 -m venv venv
-source venv/bin/activate
+python3.11 -m venv .venv
+source .venv/bin/activate
 python -m pip install -r requirement.txt
 python scripts/run_dreamt.py --check-only
 ```
@@ -38,7 +55,7 @@ python scripts/run_dreamt.py --check-only
 Windows PowerShell：
 
 ```powershell
-py -3.12 -m venv .venv
+py -3.11 -m venv .venv
 .\.venv\Scripts\python.exe -m pip install -r requirement.txt
 powershell -NoProfile -ExecutionPolicy Bypass -File .\run.ps1 --check-only
 ```
@@ -47,7 +64,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\run.ps1 --check-only
 
 ## Fir 提交
 
-先按上面的 Linux 命令准备 `./venv`，并在 `dataset_config.json` 中设置集群上的真实 IBI NPZ 路径。在项目根目录执行：
+先按上面的 Linux 命令准备 `./.venv`，并在 `dataset_config.json` 中设置集群上的真实 IBI NPZ 路径。在项目根目录执行：
 
 ```bash
 sbatch submit.sh

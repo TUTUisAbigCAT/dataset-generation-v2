@@ -1,7 +1,8 @@
 # CUDA 12.1 build; never install a CPU-only torch for this workflow.
-# Official source: https://docs.pytorch.org/get-started/previous-versions/#v2-2-2
+# torch 2.3.1 is the version recorded in the cluster run manifests (Python 3.11.5, CUDA runtime 12.2).
+# Official source: https://docs.pytorch.org/get-started/previous-versions/#v231
 --extra-index-url https://download.pytorch.org/whl/cu121
-torch==2.2.2+cu121
+torch==2.3.1+cu121
 numpy==1.26.4
 scipy==1.16.2
 einops==0.8.0

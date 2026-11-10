@@ -101,7 +101,9 @@ class CudaWorkflowTests(unittest.TestCase):
 
     def test_dependency_profile_uses_cuda_torch(self):
         dependencies = (ROOT / "requirements_cuda.txt").read_text(encoding="utf-8")
-        self.assertIn("torch==2.2.2+cu121", dependencies)
+        self.assertIn("torch==2.3.1+cu121", dependencies)
+        self.assertEqual((ROOT / "requirement.txt").read_text(encoding="utf-8").splitlines()[-1],
+                         "-r requirements_cuda.txt")
         self.assertNotIn("+cpu", dependencies)
         self.assertFalse((ROOT / "requirements_cpu.txt").exists())
 
