@@ -219,6 +219,38 @@ class NightDataTests(unittest.TestCase):
             save_night_npz(output, prepared, generated * 2)
         self.assertEqual(output.read_bytes(), before)
 
+    def test_opt_in_missing_threshold_writes_marker_zero_and_keeps_other_values(self):
+        prepared = prepare_night(self.processor)
+        generated = np.linspace(0.6, 1.0, 6000, dtype=np.float64)
+        generated[[10, 11, 12, 13]] = (-0.09, 0.0, 0.05, 0.19)
+        generated[14] = 0.2
+        output = self.directory / "threshold.npz"
+        result = save_night_npz(output, prepared, generated, missing_threshold_seconds=0.2)
+        self.assertEqual(result["written_as_missing_samples"], 4)
+        self.assertEqual(result["generated_negative_samples"], 1)
+        self.assertEqual(result["missing_threshold_seconds"], 0.2)
+        self.assertEqual(result["zero_samples"], 4)
+        with np.load(output, allow_pickle=False) as saved:
+            stored = saved["data"][:, 0]
+        np.testing.assert_array_equal(stored[10:14], np.zeros(4, dtype=np.float32))
+        keep = np.ones(6000, dtype=bool)
+        keep[10:14] = False
+        np.testing.assert_array_equal(stored[keep], generated[keep].astype(np.float32))
+
+    def test_default_save_report_is_unchanged_and_threshold_bounds_are_enforced(self):
+        prepared = prepare_night(self.processor)
+        result = save_night_npz(self.directory / "plain.npz", prepared, np.ones(6000))
+        self.assertNotIn("written_as_missing_samples", result)
+        for bad in (0.0, -0.1, 0.31, np.nan, True):
+            with self.subTest(threshold=bad), self.assertRaises(ValueError):
+                save_night_npz(self.directory / "bad.npz", prepared, np.ones(6000),
+                               missing_threshold_seconds=bad)
+            self.assertFalse((self.directory / "bad.npz").exists())
+        generated = np.ones(6000)
+        generated[5] = np.nan
+        with self.assertRaises(ValueError):
+            save_night_npz(self.directory / "nan.npz", prepared, generated, missing_threshold_seconds=0.2)
+
 
 if __name__ == "__main__":
     unittest.main()

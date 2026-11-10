@@ -234,6 +234,31 @@ class NightCommandTests(unittest.TestCase):
                     else:
                         self.assertEqual(saved["generated_seconds"][7], value)
 
+    def test_missing_threshold_writes_marker_cluster_as_zero_and_reports_it(self):
+        def marker_sample(*args, **kwargs):
+            standardized, generated, sampling, execution = self.fake_sample(*args, **kwargs)
+            generated[[3, 4, 5]] = (-.08, 0.0, .12)
+            return standardized, generated, sampling, execution
+
+        argv = self.arguments("threshold") + ["--seed", "123", "--missing-threshold-seconds", "0.2"]
+        with mock.patch("cuda_runtime.require_cuda", return_value=torch.device("cuda:0")), \
+             mock.patch.object(generate_night, "_sample", side_effect=marker_sample):
+            report = self.invoke(argv)
+        self.assertEqual(report["status"], "completed")
+        self.assertEqual(report["missing_threshold_seconds"], 0.2)
+        self.assertTrue(report["invalid_values_clipped_or_repaired"])
+        self.assertEqual(report["output_npz"]["written_as_missing_samples"], 3)
+        self.assertEqual(report["output_npz"]["generated_negative_samples"], 1)
+        with np.load(self.directory / "threshold" / "S092.npz") as saved:
+            np.testing.assert_array_equal(saved["data"][3:6, 0], np.zeros(3, dtype=np.float32))
+            self.assertGreater(float(saved["data"][6, 0]), .5)
+
+    def test_missing_threshold_above_physiological_bound_is_rejected(self):
+        for value in ("0", "0.31", "-0.1"):
+            with self.subTest(value=value), self.assertRaises(SystemExit), \
+                    contextlib.redirect_stderr(io.StringIO()):
+                self.invoke(self.arguments("bad_" + value) + ["--missing-threshold-seconds", value])
+
     def test_no_cuda_fails_before_loading_config_and_never_falls_back(self):
         argv = self.arguments("no_cuda")
         with mock.patch("cuda_runtime.require_cuda", side_effect=RuntimeError("CUDA required")), \

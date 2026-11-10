@@ -7,12 +7,17 @@ for optional evaluation; the model conditions contain no reference IBI values.
 from __future__ import annotations
 
 import json
+import math
+from numbers import Real
 from pathlib import Path
 
 import numpy as np
 
 from data_utils import CONTINUOUS
 from watchsleep_loader import EPOCH_SAMPLES, STAGE_NAMES, TARGET_FS, SSDataset
+
+# 0.3 s corresponds to 200 bpm, above any physiological sleeping heart rate.
+MAX_MISSING_THRESHOLD_SECONDS = 0.3
 
 
 def _resolve_subject(preprocessor, subject):
@@ -133,11 +138,19 @@ def prepare_night(preprocessor, subject="S092"):
                 subject_id=sid, filename=filename, record=record, provenance=provenance)
 
 
-def save_night_npz(path, prepared, generated_seconds):
+def save_night_npz(path, prepared, generated_seconds, *, missing_threshold_seconds=None):
     """Save canonical 25 Hz seconds and sample-level raw labels for SSDataset.
 
-    Generated values are never clipped or repaired. Invalid values fail before
-    creating the file. Read this output with multiplier=1 and downsample_rate=1.
+    By default generated values are never clipped or repaired and any negative
+    value fails before creating the file. Read this output with multiplier=1
+    and downsample_rate=1.
+
+    missing_threshold_seconds is an explicit opt-in for models trained with the
+    ``preserve`` policy, which learn to emit the DREAMT missing marker 0 as a
+    cluster of values around zero (some of them negative). Values below the
+    threshold are written as the marker 0 and counted in the returned report.
+    The threshold must not exceed MAX_MISSING_THRESHOLD_SECONDS (0.3 s, i.e.
+    200 bpm), below any physiological sleeping inter-beat interval.
     """
     path = Path(path)
     if path.suffix.casefold() != ".npz":
@@ -146,8 +159,22 @@ def save_night_npz(path, prepared, generated_seconds):
     expected = len(prepared["conditions"])
     if generated.ndim != 1 or generated.shape != (expected,) or generated.dtype.kind != "f":
         raise ValueError(f"generated_seconds must be a floating-point vector of length {expected}")
-    if not np.isfinite(generated).all() or np.any(generated < 0):
+    if not np.isfinite(generated).all():
         raise ValueError("Generated IBI must be finite and nonnegative; values are not clipped")
+    negative_samples = int((generated < 0).sum())
+    written_as_missing = 0
+    if missing_threshold_seconds is None:
+        if negative_samples:
+            raise ValueError("Generated IBI must be finite and nonnegative; values are not clipped")
+    else:
+        if (isinstance(missing_threshold_seconds, bool) or not isinstance(missing_threshold_seconds, Real)
+                or not math.isfinite(missing_threshold_seconds)
+                or not 0.0 < float(missing_threshold_seconds) <= MAX_MISSING_THRESHOLD_SECONDS):
+            raise ValueError("missing_threshold_seconds must lie in (0, "
+                             f"{MAX_MISSING_THRESHOLD_SECONDS}] seconds")
+        marker = generated < float(missing_threshold_seconds)
+        written_as_missing = int(marker.sum())
+        generated = np.where(marker, 0.0, generated)
     with np.errstate(over="ignore", invalid="ignore"):
         stored = generated.astype(np.float32)
     if not np.isfinite(stored).all():
@@ -164,6 +191,12 @@ def save_night_npz(path, prepared, generated_seconds):
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("xb") as stream:
         np.savez_compressed(stream, **arrays)
-    return dict(path=str(path.resolve()), samples=expected, epochs=len(prepared["raw_stage_epochs"]),
-                sample_rate_hz=TARGET_FS, units="seconds", zero_samples=int((stored == 0).sum()),
-                loader_multiplier=1.0, loader_downsample_rate=1)
+    result = dict(path=str(path.resolve()), samples=expected, epochs=len(prepared["raw_stage_epochs"]),
+                  sample_rate_hz=TARGET_FS, units="seconds", zero_samples=int((stored == 0).sum()),
+                  loader_multiplier=1.0, loader_downsample_rate=1)
+    if missing_threshold_seconds is not None:
+        result.update(missing_threshold_seconds=float(missing_threshold_seconds),
+                      generated_negative_samples=negative_samples,
+                      written_as_missing_samples=written_as_missing,
+                      missing_marker_policy="generated IBI below the threshold written as DREAMT missing marker 0")
+    return result

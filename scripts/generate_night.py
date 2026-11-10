@@ -112,16 +112,22 @@ def main(argv=None):
     parser.add_argument("--windows-per-group", type=int, default=4)
     parser.add_argument("--output-dir", type=Path, required=True, help="New directory; existing outputs are never overwritten")
     parser.add_argument("--check-only", action="store_true", help="Validate checkpoint path, config, subject and plan without loading a model or using GPU")
+    parser.add_argument("--missing-threshold-seconds", type=float, default=None,
+                        help="Opt-in: write generated IBI below this value (at most 0.3 s) as the DREAMT missing "
+                             "marker 0. Default: off, so any negative generated value is an error")
     cli = parser.parse_args(argv)
     if min(cli.threads, cli.stride_epochs, cli.windows_per_group) <= 0:
         parser.error("--threads, --stride-epochs and --windows-per-group must be positive")
     if not 0 <= cli.seed <= 2**32 - 1:
         parser.error("--seed must be between 0 and 2**32 - 1")
+    if cli.missing_threshold_seconds is not None and not 0.0 < cli.missing_threshold_seconds <= 0.3:
+        parser.error("--missing-threshold-seconds must lie in (0, 0.3]")
     cli.output_dir = cli.output_dir.resolve()
     cli.output_dir.mkdir(parents=True, exist_ok=False)
     report = dict(schema="dreamt_whole_night_generation_v2", status="starting", input_mode="direct_checkpoint",
         requested_subject=cli.subject, check_only=cli.check_only, sampling_seed=cli.seed,
         reference_ibi_passed_to_sampler=False, real_DREAMT_quality_verified=False,
+        missing_threshold_seconds=cli.missing_threshold_seconds,
         generated_output_is_synthetic=True, output_dir=str(cli.output_dir),
         historical_training_identity_verified=False, model_state_validated=False,
         normalization_source="recomputed from the configured training split",
@@ -197,7 +203,8 @@ def main(argv=None):
         report["checkpoint_identity"]["hash_scope"] = "loaded_checkpoint_bytes"
         output_path = cli.output_dir / (prepared["subject_id"] + ".npz")
         try:
-            report["output_npz"] = save_night_npz(output_path, prepared, generated)
+            report["output_npz"] = save_night_npz(output_path, prepared, generated,
+                                                  missing_threshold_seconds=cli.missing_threshold_seconds)
         except Exception:
             import numpy as np
 
@@ -212,7 +219,7 @@ def main(argv=None):
         preprocessor.metadata.loc[[prepared["subject_id"]]].reset_index().to_csv(metadata_path, index=False)
         report.update(status="completed", output_npz_sha256=sha256(output_path),
             participant_metadata=str(metadata_path), participant_metadata_sha256=sha256(metadata_path),
-            invalid_values_clipped_or_repaired=False)
+            invalid_values_clipped_or_repaired=cli.missing_threshold_seconds is not None)
         save_report()
         print(json.dumps(dict(status="completed", subject=prepared["subject_id"],
             samples=report["target_samples"], output_npz=str(output_path)), allow_nan=False), flush=True)
