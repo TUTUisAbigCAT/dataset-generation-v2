@@ -219,6 +219,13 @@ class SSDatasetCompatibilityTests(TemporaryDataTest):
 class PreprocessorTests(TemporaryDataTest):
     def setUp(self):
         super().setUp()
+        # Hermetic: these fixtures pass explicit paths and must not inherit the committed
+        # cluster configuration (88-subject evaluation protocol, minmax bounds).
+        neutral_config = self.directory / "neutral_dataset_config.json"
+        neutral_config.write_text("{}", encoding="utf-8")
+        environment = mock.patch.dict(os.environ, {"DREAMT_CONFIG_PATH": str(neutral_config)})
+        environment.start()
+        self.addCleanup(environment.stop)
         self.data = self.directory / "npz"
         self.data.mkdir()
         self.metadata_path = self.directory / "participants.csv"

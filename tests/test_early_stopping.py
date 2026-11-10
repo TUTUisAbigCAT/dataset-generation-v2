@@ -136,10 +136,19 @@ class EarlyStoppingTests(unittest.TestCase):
         self.assertEqual(run_simulation.validate_completion(validation, 6, 2, 3)['stop_reason'], 'max_epochs')
 
 
-class TinyTestModel(torch.nn.Module):
+class S4Layer(torch.nn.Module):
+    """Inert stand-in exposing the dropout attribute audited by s4_dropout_report."""
     def __init__(self):
         super().__init__()
+        self.dropout = torch.nn.Identity()
+
+
+class TinyTestModel(torch.nn.Module):
+    def __init__(self, s4_layers=8):
+        super().__init__()
         self.weight = torch.nn.Parameter(torch.tensor(.05))
+        # Two S4 layers per residual block (default num_res_layers=4), never called in forward.
+        self.s4_layers = torch.nn.ModuleList(S4Layer() for _ in range(s4_layers))
 
     def forward(self, batch, time):
         return (batch[:, :, :1] * self.weight).permute(0, 2, 1)

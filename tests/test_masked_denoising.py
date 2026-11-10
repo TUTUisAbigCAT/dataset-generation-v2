@@ -130,6 +130,8 @@ class MaskedDenoisingTests(unittest.TestCase):
                     and isinstance(item.targets[0].value, ast.Name) and item.targets[0].value.id == "raw"
                     for item in node.body))
         protocol_branch = next(node for node in main.body if isinstance(node, ast.If)
+            and isinstance(node.test, ast.Compare) and isinstance(node.test.left, ast.Name)
+            and node.test.left.id == "observed_masks"
             and any(isinstance(item, ast.Expr) and isinstance(item.value, ast.Call)
                     and isinstance(item.value.func, ast.Attribute) and item.value.func.attr == "update"
                     and isinstance(item.value.func.value, ast.Subscript)
