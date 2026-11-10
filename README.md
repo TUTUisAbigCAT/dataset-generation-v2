@@ -17,11 +17,17 @@
 - **留出受试者**：`scripts/make_holdout_split.py` 生成 S092 只在验证集中的划分和配置。
 - 修复了原仓库测试套件中 14 个已有的失败（测试未随代码更新），统一了环境说明。
 
-推荐配置的重训：
+推荐配置的重训（Trillium GPU 子集群，登录节点 `trig-login01`，在仓库目录下提交）：
 
 ```bash
-sbatch submit_recommended.sh   # EMA + masked + S4 dropout 0.03 + 关闭输入 dropout，100 epochs
+sbatch submit_v2_gpu_tests.sh                              # 先在 GPU 上跑完整测试
+sbatch submit_v2_recommended.sh                            # EMA + masked + S4 dropout 0.03，默认 50 epochs
+sbatch --export=ALL,EPOCHS=100 submit_v2_recommended.sh    # 仅当 100 轮能在 24 小时内跑完
 ```
+
+- Trillium 单个作业最长 24 小时，而 `run_dreamt.py` 不支持断点续训，所有 epoch 和最后的评估必须在一个作业内完成。可用 `sacct -j <旧作业号> --format=JobID,Elapsed` 查看以往 50 轮的耗时再决定轮数。
+- 作业内 `$HOME` 与 `$PROJECT` 只读：训练输出写到 scratch（`/home/yxtao/links/scratch/dataset-generation-v2/runs/`）；测试脚本先把代码复制到作业内存盘（`$SLURM_TMPDIR`）再运行，因为部分测试会在仓库下写临时文件。
+- 环境与以往运行记录一致：`module load StdEnv/2023 gcc/12.3 opencv/4.9.0 python/3.11 scipy-stack/2024a`，`.venv` 中为 Alliance wheel 的 torch 2.3.1（CUDA 12.2，cuDNN 9.2.1），numpy 1.26.4 来自 `scipy-stack/2024a`。在 Alliance 集群上用 `virtualenv --no-download .venv` 和 `pip install --no-index` 安装；`requirements_cuda.txt` 面向能访问 pytorch.org 的机器，与集群上的构建不同。
 
 ## 缺失零值训练对照
 

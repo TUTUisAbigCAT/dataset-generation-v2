@@ -46,11 +46,27 @@ class RecommendedConfigTests(unittest.TestCase):
                               if self.config["validation"][key] != self.base["validation"].get(key)}
         self.assertEqual(validation_changes, {"save_epoch_checkpoints"})
 
-    def test_submission_script_uses_the_recommended_config(self):
-        source = (ROOT / "submit_recommended.sh").read_text(encoding="utf-8")
-        self.assertIn("source ./.venv/bin/activate", source)
-        self.assertIn("--config configs/dreamt_recommended.json", source)
-        self.assertIn("module load python/3.11", source)
+    def test_submission_scripts_match_the_recorded_trillium_environment(self):
+        self.assertFalse((ROOT / "submit_recommended.sh").exists())
+        for name in ("submit_v2_recommended.sh", "submit_v2_gpu_tests.sh"):
+            source = (ROOT / name).read_text(encoding="utf-8")
+            with self.subTest(script=name):
+                self.assertTrue(source.startswith("#!/bin/bash\n"))
+                self.assertNotIn("\r", source)
+                for line in ("set -euo pipefail", 'cd "${SLURM_SUBMIT_DIR}"', "module load python/3.11",
+                             "module load scipy-stack/2024a", "source ./.venv/bin/activate",
+                             "export BLIS_THREAD_IMPL=single BLIS_NUM_THREADS=1"):
+                    self.assertIn(line, source)
+        training = (ROOT / "submit_v2_recommended.sh").read_text(encoding="utf-8")
+        self.assertIn("#SBATCH --time=24:00:00", training)
+        self.assertIn('EPOCHS="${EPOCHS:-50}"', training)
+        self.assertIn('CONFIG=configs/dreamt_recommended.json', training)
+        self.assertIn('--config "$CONFIG" --output-dir "$OUTPUT"', training)
+        self.assertIn("/links/scratch/", training.split("OUTPUT=", 1)[1].splitlines()[0])
+        tests = (ROOT / "submit_v2_gpu_tests.sh").read_text(encoding="utf-8")
+        self.assertIn('COPY="${SLURM_TMPDIR}/dataset-generation-v2"', tests)
+        self.assertIn('export TMPDIR="${SLURM_TMPDIR}"', tests)
+        self.assertLess(tests.index('cd "${COPY}"'), tests.index("python -B -m unittest discover -s tests -v"))
 
 
 if __name__ == "__main__":

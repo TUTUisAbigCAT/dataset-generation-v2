@@ -1,4 +1,5 @@
 # CUDA 12.1 build; never install a CPU-only torch for this workflow.
+# Not for Alliance clusters (Trillium/Fir): there, use the modules + `pip install --no-index` steps in README.
 # torch 2.3.1 is the version recorded in the cluster run manifests (Python 3.11.5, CUDA runtime 12.2).
 # Official source: https://docs.pytorch.org/get-started/previous-versions/#v231
 --extra-index-url https://download.pytorch.org/whl/cu121

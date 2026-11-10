@@ -31,7 +31,8 @@
 - `compare_s092_sweep_best.py --checkpoint-epoch N`：冻结并采样任意一个已保存的 epoch（配合 `--seed` 做多 seed 复评）。逐轮 checkpoint 不存在或 SHA256 不匹配时直接拒绝，不会回退到最优 checkpoint。样本汇总中的 `checkpoint_kind` 会如实标注为 `epoch_NNNN`。
 - 新增 `ibi_structure_metrics.py`：25 Hz 阶梯（平台）结构、配对 Wasserstein-1，以及可选的 `to_sample_and_hold` 后处理。每轮写入 `metrics.json` 的 `diagnostics.ibi_structure`；不参与选模型，`epoch_metrics.csv` 的列不变。
 - 新增 `scripts/make_holdout_split.py`：生成 S092 只在验证集中的划分和对应配置，scaler 不会使用 S092。
-- 新增 `configs/dreamt_recommended.json` 和 `submit_recommended.sh`：EMA 0.9999、`masked` 缺失值策略、S4 dropout 0.03、关闭输入 dropout、保存逐轮 checkpoint、训练 100 个 epoch。
+- 新增 `configs/dreamt_recommended.json`：EMA 0.9999、`masked` 缺失值策略、S4 dropout 0.03、关闭输入 dropout、保存逐轮 checkpoint。
+- Trillium 作业脚本：`submit_v2_gpu_tests.sh`（把代码复制到 `$SLURM_TMPDIR` 后跑完整测试，因为作业内 `$PROJECT` 只读）和 `submit_v2_recommended.sh`（推荐配置，默认 50 个 epoch，可用 `EPOCHS` 覆盖；Trillium 单作业最长 24 小时且训练不支持续训）。两者都显式加载 `scipy-stack/2024a`，与以往运行的 numpy 1.26.4 环境一致。
 
 ## P2：维护
 
