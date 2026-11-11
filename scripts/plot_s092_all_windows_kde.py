@@ -12,7 +12,9 @@ Outputs (in --output-dir):
   window_metrics_timeline.png      per-window means and KL across the night, with hypnogram
   pooled_and_stage_kde.png         KDE pooled over windows: all stages, W, Light, REM, Deep
   window_kde_grid.png              KDE of evenly spaced windows (overview)
+  window_waveform_grid.png         real and generated IBI over time for the same windows
   all_windows_kde.pdf              KDE of every plotted window, 16 per page
+  all_windows_waveforms.pdf        IBI over time for every plotted window, 8 per page
 
 Usage:
   python scripts/plot_s092_all_windows_kde.py RESULT_DIR --config-id 1
@@ -111,6 +113,28 @@ def draw_kde(ax, real, gen, xs, title, legend=True, fontsize=9):
         ax.spines[side].set_visible(False)
     if legend:
         ax.legend(frameon=False, fontsize=fontsize - 1, loc="upper left")
+
+
+STAGE_COLORS = ("#f2c14e", "#9ecae1", "#c7a0d6", "#3c6e9f")   # W, Light, REM, Deep
+
+
+def draw_waveform(ax, real, gen, mask, stages, fs, ylim, title, legend=True, fontsize=9):
+    """Real IBI at observed positions (gaps at missing markers) and the generated waveform."""
+    t = np.arange(real.size) / fs
+    for k, stage in enumerate(stages):
+        ax.axvspan(k * 30, (k + 1) * 30, color=STAGE_COLORS[stage], alpha=.16, lw=0)
+        ax.text(k * 30 + 15, ylim[1], STAGES[stage], ha="center", va="top", fontsize=fontsize - 1, color="#55544f")
+    ax.plot(t, np.where(mask, real, np.nan), color=REAL, lw=1.3, label="Real IBI (observed)")
+    ax.plot(t, gen, color=GEN, lw=.9, alpha=.9, label="Generated IBI")
+    ax.set_xlim(0, real.size / fs)
+    ax.set_ylim(*ylim)
+    ax.set_xticks(np.arange(0, real.size / fs + 1, 30))
+    ax.set_title(title, fontsize=fontsize, loc="left")
+    ax.grid(axis="y", color="#e6e5e0", lw=.7)
+    for side in ("top", "right"):
+        ax.spines[side].set_visible(False)
+    if legend:
+        ax.legend(frameon=False, fontsize=fontsize - 1, loc="lower left", ncol=2)
 
 
 def main(argv=None):
@@ -253,6 +277,45 @@ def main(argv=None):
     fig.tight_layout(rect=(0, .02, 1, .97))
     fig.savefig(out / "window_kde_grid.png", dpi=150)
     plt.close(fig)
+
+    # 3b) The same windows over time.
+    ylim = (xs[0], xs[-1] + .12 * (xs[-1] - xs[0]))     # headroom for stage labels
+
+    def waveform_panel(ax, i, fontsize=8.5, legend=True):
+        title = f"#{i}  {clock(starts[i] / fs)}–{clock(starts[i] / fs + w / fs)} · KL {kl[i]:.3g}"
+        draw_waveform(ax, d["ref"][i], d["gen"][i], d["mask"][i], d["stages"][i], fs, ylim, title,
+                      legend=legend, fontsize=fontsize)
+
+    fig, axes = plt.subplots(rows_n, cols, figsize=(5.4 * cols, 3.1 * rows_n), squeeze=False, sharey=True)
+    for ax in axes.flat[len(chosen):]:
+        ax.axis("off")
+    for k, (ax, i) in enumerate(zip(axes.flat, chosen)):
+        waveform_panel(ax, int(i), legend=k == 0)
+    for ax in axes[:, 0]:
+        ax.set_ylabel("IBI (s)")
+    for ax in axes[-1]:
+        ax.set_xlabel("Time within window (s)")
+    fig.suptitle(header + " | IBI over time, evenly spaced windows", x=.01, ha="left", fontsize=13)
+    fig.text(.01, .005, note + " Shading: input sleep-stage label per 30 s epoch; gaps in real IBI are missing markers.",
+             fontsize=8.5, color="#55544f")
+    fig.tight_layout(rect=(0, .02, 1, .97))
+    fig.savefig(out / "window_waveform_grid.png", dpi=150)
+    plt.close(fig)
+
+    with PdfPages(out / "all_windows_waveforms.pdf") as pdf:
+        for page in range(0, len(selected), 8):
+            block = selected[page:page + 8]
+            fig, axes = plt.subplots(4, 2, figsize=(17, 12.5), squeeze=False, sharey=True)
+            for ax in axes.flat[len(block):]:
+                ax.axis("off")
+            for k, (ax, i) in enumerate(zip(axes.flat, block)):
+                waveform_panel(ax, int(i), fontsize=8, legend=k == 0)
+            fig.suptitle(f"{header} | IBI over time, windows {page + 1}–{page + len(block)} of {len(selected)}",
+                         x=.01, ha="left", fontsize=12)
+            fig.text(.01, .005, note, fontsize=8, color="#55544f")
+            fig.tight_layout(rect=(0, .02, 1, .97))
+            pdf.savefig(fig)
+            plt.close(fig)
 
     # 4) Every plotted window, 16 per page.
     with PdfPages(out / "all_windows_kde.pdf") as pdf:
