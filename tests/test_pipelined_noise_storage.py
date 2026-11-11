@@ -49,8 +49,10 @@ class PipelinedNoiseStorageTests(unittest.TestCase):
     def check_noise_storage(self, device):
         args = arguments()
         batch = torch.zeros(4, 8, 10, device=device)
+        # Mirrors production: torch.normal(mean, std, size) ignores the device
+        # context in torch 2.3, so the sampler creates noise on CPU and calls .to(device).
         with torch.device(device):
-            noise = noise_function(True)(batch, args)
+            noise = noise_function(True)(batch, args).to(device)
         self.assertEqual(noise.device, device)
         self.assertTrue(torch.equal(noise[1:, :6], noise[:-1, 2:]))
         neighbor_before = noise[1, 0].clone()

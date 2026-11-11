@@ -102,6 +102,9 @@ class MissingWorkflowTests(unittest.TestCase):
                 self.assertEqual(frozen["missing_value_policy"], policy)
                 self.assertFalse(frozen["early_stopping"]["enabled"])
 
+    # Upstream calc_diffusion_step_embedding calls .cuda() whenever CUDA exists,
+    # so this CPU smoke test needs a CPU-only view of the host; CUDA is tested separately.
+    @mock.patch("torch.cuda.is_available", new=lambda: False)
     def test_actual_masked_training_loop_updates_real_s4_and_weights_observed_points(self):
         with tempfile.TemporaryDirectory() as temp:
             data = Path(temp) / "data"

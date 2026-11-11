@@ -224,6 +224,9 @@ class InputDropoutTests(unittest.TestCase):
             with self.subTest(source_sha=hash(source)),self.assertRaises(ValueError):
                 remove_training_input_dropout_edits(source)
 
+    # Upstream calc_diffusion_step_embedding calls .cuda() whenever CUDA exists,
+    # so this CPU smoke test needs a CPU-only view of the host; CUDA is tested separately.
+    @mock.patch("torch.cuda.is_available", new=lambda: False)
     def test_two_real_s4_updates_for_both_clean_input_ranges(self):
         # Real preprocessing + S4 + actual optimizer loop, reduced model on CPU.
         # This is an implementation smoke test, not a production training run.

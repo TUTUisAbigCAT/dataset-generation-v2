@@ -219,6 +219,9 @@ class ZeroFillWorkflowTests(unittest.TestCase):
         self.assertFalse(protocol["raw_observed_mask_exported"])
         self.assertIn("not the original raw", protocol["reference_target"])
 
+    # Upstream calc_diffusion_step_embedding calls .cuda() whenever CUDA exists,
+    # so this CPU smoke test needs a CPU-only view of the host; CUDA is tested separately.
+    @mock.patch("torch.cuda.is_available", new=lambda: False)
     def test_actual_s4_production_loop_supervises_filled_positions_with_ordinary_mse(self):
         processor = self.processor()
         dataset = processor.make_training_dataset(750, 750)

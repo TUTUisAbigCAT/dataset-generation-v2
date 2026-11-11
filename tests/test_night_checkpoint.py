@@ -85,6 +85,9 @@ class NightCheckpointTests(unittest.TestCase):
                 self.assertTrue(torch.equal(value, saved[name]), name)
                 self.assertEqual(value.device, device)
 
+    # Upstream calc_diffusion_step_embedding calls .cuda() whenever CUDA exists,
+    # so this CPU smoke test needs a CPU-only view of the host; CUDA is tested separately.
+    @mock.patch("torch.cuda.is_available", new=lambda: False)
     def test_full_s4_fft_forward_restores_nonzero_output_and_different_fixed_buffers_cpu(self):
         self.check_full_s4_restore(torch.device("cpu"))
 

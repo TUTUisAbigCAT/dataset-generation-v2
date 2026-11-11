@@ -6,6 +6,7 @@ from pathlib import Path
 import sys
 from types import SimpleNamespace
 import unittest
+from unittest import mock
 
 import numpy as np
 import torch
@@ -139,6 +140,9 @@ class DiagnosticSamplingTests(unittest.TestCase):
         self.assertTrue(bool((values<0).any()))
         self.assertEqual(report["stages"]["same_conditions"]["rows"][0]["generated_negative_fraction"],float((values<0).mean()))
 
+    # Upstream calc_diffusion_step_embedding calls .cuda() whenever CUDA exists,
+    # so this CPU smoke test needs a CPU-only view of the host; CUDA is tested separately.
+    @mock.patch("torch.cuda.is_available", new=lambda: False)
     def test_actual_small_s4_runs_all_stages_without_state_mutation(self):
         from training_utils import fetchModel
         items = list(fixture())
