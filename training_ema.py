@@ -1,8 +1,9 @@
 """Opt-in exponential moving average (EMA) of model parameters.
 
-The EMA copy is used only for epoch validation and the checkpoints written by
-the validator (best_kl_model.pth and optional per-epoch model.pth). Training,
-the optimizer, the loss, the forward-noising draws and the final
+The EMA copy is used only for epoch validation, the checkpoints written by
+the validator (best_kl_model.pth and optional per-epoch model.pth) and the
+additional saved_models/<dataset>/model_ema.pth written after training.
+Training, the optimizer, the loss, the forward-noising draws and the final
 saved_models/<dataset>/model.pth keep using the live training model.
 
 decay=0 (the default) creates no copy and performs no work, so legacy runs stay
@@ -75,12 +76,29 @@ class TrainingEMA:
         """Return the EMA model when active, otherwise the live model itself."""
         return model if self.model is None else self.model
 
+    def save_evaluation_weights(self, model, path):
+        """Write the evaluation weights (EMA when active, else the live model) atomically.
+
+        Called once after training. With decay=0 the file equals model.pth.
+        """
+        import hashlib
+        import torch
+
+        path = Path(path)
+        temporary = path.with_suffix(path.suffix + ".tmp")
+        torch.save(self.evaluation_model(model).state_dict(), temporary)
+        temporary.replace(path)
+        self.saved_evaluation_weights = dict(path=str(path), ema_active=self.active,
+                                             sha256=hashlib.sha256(path.read_bytes()).hexdigest())
+        return self.saved_evaluation_weights
+
     def report(self):
         return dict(decay=self.decay, active=self.active, updates=self.updates,
                     warmup="effective decay = min(decay, (1 + n) / (10 + n)) at update n",
                     averaged="model.parameters()", buffers="copied from the live training model after every update",
                     used_for="epoch validation and validator checkpoints (best_kl_model.pth, epoch_NNNN/model.pth)",
                     final_saved_model="saved_models/<dataset>/model.pth remains the live training weights",
+                    final_evaluation_weights=getattr(self, "saved_evaluation_weights", None),
                     random_streams_consumed=False)
 
 

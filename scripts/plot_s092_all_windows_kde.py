@@ -18,6 +18,7 @@ Outputs (in --output-dir):
 
 Usage:
   python scripts/plot_s092_all_windows_kde.py RESULT_DIR --config-id 1
+  python scripts/plot_s092_all_windows_kde.py EVAL_DIR --folder subject_S002
 """
 from __future__ import annotations
 
@@ -35,9 +36,9 @@ REAL, GEN = "#2a78d6", "#eb6834"
 KDE_MAX_POINTS = 60000                         # pooled KDE subsample (fixed seed); windows use all points
 
 
-def load(result_dir, config_id):
+def load(result_dir, config_id, folder_name=None):
     root = Path(result_dir).expanduser().resolve()
-    folder = root / f"config_{config_id}"
+    folder = root / (folder_name or f"config_{config_id}")
     with np.load(folder / "inputs.npz", allow_pickle=False) as saved:
         inputs = {key: saved[key].copy() for key in saved.files}
     with np.load(folder / "waveforms.npz", allow_pickle=False) as saved:
@@ -141,6 +142,8 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("result_dir", type=Path)
     parser.add_argument("--config-id", type=int, default=1)
+    parser.add_argument("--folder", help="Subfolder to plot instead of config_<id>, e.g. subject_S092 "
+                        "(output of scripts/evaluate_subject_windows.py)")
     parser.add_argument("--output-dir", type=Path)
     parser.add_argument("--include-overlapping", action="store_true",
                         help="Also plot overlapping windows in the KDE figures/PDF (default: non-overlapping only; "
@@ -153,9 +156,10 @@ def main(argv=None):
     import matplotlib.pyplot as plt
     from matplotlib.backends.backend_pdf import PdfPages
 
-    d = load(cli.result_dir, cli.config_id)
+    d = load(cli.result_dir, cli.config_id, cli.folder)
     fs, w, starts = d["fs"], d["w"], d["starts"]
-    out = (cli.output_dir or d["root"] / f"plots_config_{cli.config_id}_windows").expanduser().resolve()
+    label = cli.folder or f"config_{cli.config_id}"
+    out = (cli.output_dir or d["root"] / f"plots_{label}_windows").expanduser().resolve()
     out.mkdir(parents=True, exist_ok=True)
     n = len(starts)
     selected = np.arange(n) if cli.include_overlapping else nonoverlapping(starts, w)
@@ -184,7 +188,7 @@ def main(argv=None):
                          "figure.facecolor": "white", "axes.edgecolor": "#b5b4ad",
                          "axes.labelcolor": "#3f3e3b", "xtick.color": "#3f3e3b", "ytick.color": "#3f3e3b"})
     meta = d["meta"]
-    header = (f"S092 | config_{cli.config_id}" + (f" ({meta['name']})" if meta.get("name") else "")
+    header = (("S092 | " if cli.folder is None else "") + label + (f" ({meta['name']})" if meta.get("name") else "")
               + (f" | checkpoint epoch {meta['epoch']}" if meta.get("epoch") else "")
               + (f" | seed {meta['seed']}" if meta.get("seed") is not None else ""))
     note = (f"{n} windows of {w // fs} s, start step {stride} s; KDE figures use "

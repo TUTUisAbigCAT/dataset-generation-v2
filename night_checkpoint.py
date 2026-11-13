@@ -17,6 +17,7 @@ from diffusion_schedule import diffusion_settings
 from scripts.evaluate_denoising import DEFAULT_TRAINING_ARGS
 from window_config import EPOCH_SAMPLES, window_settings
 from s4_dropout_config import s4_dropout_options
+from model_config import model_options
 
 
 def load_inference_config(config_path):
@@ -28,9 +29,10 @@ def load_inference_config(config_path):
         raise ValueError("Inference configuration must be a JSON object")
     dimensions = window_settings(config)
     schedule = diffusion_settings(config, default_schedule="linear_power")
+    model_size = model_options(config)
     args = SimpleNamespace(**dict(DEFAULT_TRAINING_ARGS, dataset="DREAMT",
         window_size=dimensions["window_size"], s4_lmax=dimensions["window_size"],
-        stride=EPOCH_SAMPLES, s4_dropout=s4_dropout_options(config), **schedule))
+        stride=EPOCH_SAMPLES, s4_dropout=s4_dropout_options(config), **schedule, **model_size))
     data_config = deepcopy(config)
     for key in ("data_dir", "metadata_path", "split_path"):
         value = data_config.get(key)
@@ -42,7 +44,7 @@ def load_inference_config(config_path):
         data_config[key] = str((selected if selected.is_absolute() else path.parent / selected).resolve())
     provenance = dict(source="explicit inference JSON and fixed S4 baseline template",
         config_path=str(path), config_sha256=hashlib.sha256(contents).hexdigest(),
-        window=dimensions, diffusion_settings=schedule, s4_dropout=args.s4_dropout,
+        window=dimensions, diffusion_settings=schedule, s4_dropout=args.s4_dropout, model=model_size,
         environment_overrides_used=False, training_manifest_read=False,
         training_identity_verified=False, training_source_identity_verified=False,
         training_schedule_identity_verified=False, training_scaler_identity_verified=False,

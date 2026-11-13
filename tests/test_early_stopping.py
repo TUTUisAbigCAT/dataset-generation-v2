@@ -212,7 +212,8 @@ class LauncherEarlyStoppingTests(unittest.TestCase):
                     self.assertEqual(reader.fieldnames, [
                         'epoch', 'train_mean_loss', 'gaussian_kl_real_to_generated',
                         'smoothed_gaussian_kl_real_to_generated', 'validation_seconds',
-                        'smoothing_ready', 'metric_improvement', 'early_stopping_bad_epochs', 'stopped_early'])
+                        'smoothing_ready', 'metric_improvement', 'early_stopping_bad_epochs', 'stopped_early',
+                        'pooled_w1_ms', 'pooled_ks', 'window_kl_median'])
                 self.assertEqual(len(rows), completed)
                 self.assertEqual([row['smoothed_gaussian_kl_real_to_generated'] for row in rows[:4]],
                                  [''] * min(4, completed))

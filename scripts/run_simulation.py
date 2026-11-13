@@ -86,11 +86,16 @@ def main():
     dropout_options = input_dropout_options(config)
     from training_ema import ema_options
     ema_settings = ema_options(config)
+    from training_schedule import schedule_options
+    schedule_settings_training = schedule_options(config)
+    from model_config import model_cli_arguments, model_options
+    model_settings = model_options(config)
     s4_probability = s4_dropout_options(config)
     output = args.output_dir.resolve()
     output.mkdir(parents=True, exist_ok=False)
     checkpoint_path = ROOT / 'saved_models' / args.dataset / 'model.pth'
-    if checkpoint_path.exists():
+    ema_checkpoint_path = checkpoint_path.with_name('model_ema.pth')
+    if checkpoint_path.exists() or ema_checkpoint_path.exists():
         raise FileExistsError('The original script would overwrite its checkpoint; preserve this run first')
     subprocess.run([sys.executable, str(ROOT / 'scripts/verify_upstream_boundary.py'),
                     '--output', str(output / 'source_boundary_before.json')], cwd=ROOT, check=True)
@@ -106,14 +111,14 @@ def main():
                     ROOT / 'watchsleep_loader.py', ROOT / 'dataset_config.json', ROOT / 'cuda_runtime.py',
                     ROOT / 'third_party/WatchSleepNet/data_setup.py', ROOT / 'epoch_validation.py',
                     ROOT / 'validation_metrics.py', ROOT / 'validation_sampling.py', ROOT / 'validation_artifacts.py', ROOT / 'window_config.py',
-                    ROOT / 'scripts/evaluate_original_sampler.py', ROOT / 'diffusion_schedule.py', ROOT / 'missing_data.py', ROOT / 'signal_normalization.py', ROOT / 'training_input_dropout.py', ROOT / 'training_ema.py', ROOT / 'ibi_structure_metrics.py', ROOT / 's4_dropout_config.py', ROOT / 'host_runtime.py']
+                    ROOT / 'scripts/evaluate_original_sampler.py', ROOT / 'diffusion_schedule.py', ROOT / 'missing_data.py', ROOT / 'signal_normalization.py', ROOT / 'training_input_dropout.py', ROOT / 'training_ema.py', ROOT / 'ibi_structure_metrics.py', ROOT / 's4_dropout_config.py', ROOT / 'host_runtime.py', ROOT / 'training_schedule.py', ROOT / 'model_config.py', ROOT / 'distribution_metrics.py', ROOT / 'hrv_metrics.py']
     hashes = {str(p.relative_to(ROOT)): sha(p) for p in source_paths}
     command = [filename, '-d', args.dataset, '-window_size', str(dimensions['window_size']), '-s4_lmax', str(dimensions['window_size']),
                '-stride', str(EPOCH_SAMPLES), '-batch_size', str(args.batch_size), '-epochs', str(args.epochs),
                '-diffusion_schedule', schedule_settings['diffusion_schedule'],
                '-terminal_alpha_bar', str(schedule_settings['terminal_alpha_bar']),
                '-s4_dropout', str(s4_probability),
-               '-validation_output', str(output / 'validation')]
+               '-validation_output', str(output / 'validation')] + model_cli_arguments(config)
     manifest = dict(status='starting', python=sys.executable, python_version=sys.version,
                     torch=torch.__version__, numpy=np.__version__, cuda=torch.cuda.is_available(),
                     mkldnn_enabled=torch.backends.mkldnn.enabled, threads=torch.get_num_threads(),
@@ -122,6 +127,8 @@ def main():
                     host_thread_runtime=configure_host_threads(),
                     diffusion_settings=schedule_settings, training_input_dropout=dict(options=dropout_options),
                     training_ema=dict(options=ema_settings),
+                    training_schedule=dict(options=schedule_settings_training),
+                    model_settings=model_settings,
                     s4_dropout=s4_probability,
                     observer='sys.settrace reads current loss and completed updates only; no training hooks or replacements',
                     observer_sha256=sha(Path(__file__)), training_args=None,
@@ -157,6 +164,8 @@ def main():
                     state = frame.f_locals
                     if state['args'].s4_dropout != s4_probability or not state['model'].training:
                         raise ValueError('S4 dropout launch configuration/mode did not reach training')
+                    if any(getattr(state['args'], key) != value for key, value in model_settings.items()):
+                        raise ValueError('Configured model size did not reach training')
                     manifest['s4_dropout_runtime'] = s4_dropout_report(
                         state['model'], s4_probability, expected_layers=2 * state['args'].num_res_layers)
                     manifest.update(status='training', training_args=vars(state['args']).copy(),
@@ -204,6 +213,7 @@ def main():
     validation = training_state['validator'].summary()
     dropout_report = training_state['training_input_dropout'].report()
     ema_report = training_state['training_ema'].report()
+    schedule_report = training_state['training_schedule'].report()
     del training_state  # Release the training model/optimizer before loading the checkpoint audit.
     completion = validate_completion(validation, steps, manifest['batches_per_epoch'], args.epochs)
     assert hashes == {str(p.relative_to(ROOT)): sha(p) for p in source_paths}
@@ -221,7 +231,8 @@ def main():
                   mean_loss=weighted_loss(rows), loss_aggregation=('observed_point_weighted_mean'
                       if manifest['missing_value_policy'] == 'masked' else 'sample_weighted_mean'),
                   missing_value_policy=manifest['missing_value_policy'], training_input_dropout=dropout_report,
-                  training_ema=ema_report,
+                  training_ema=ema_report, training_schedule=schedule_report, model_settings=model_settings,
+                  ema_checkpoint=str(ema_checkpoint_path), ema_checkpoint_sha256=sha(ema_checkpoint_path),
                   s4_dropout=s4_probability, s4_dropout_runtime=manifest['s4_dropout_runtime'],
                   validation=validation, all_losses_finite=True, checkpoint_all_finite=True,
                   checkpoint=str(checkpoint_path), checkpoint_sha256=sha(checkpoint_path),

@@ -8,6 +8,8 @@
 # Run from /project/def-plago/yxtao/dataset-generation-v2:
 #   sbatch submit_v2_recommended.sh                          # 50 epochs (default)
 #   sbatch --export=ALL,EPOCHS=100 submit_v2_recommended.sh  # only if 100 epochs fit in 24 h
+#   sbatch --export=ALL,CONFIG=configs/dreamt_b1.json submit_v2_recommended.sh     # + LR schedule, W1 selection
+#   sbatch --export=ALL,CONFIG=configs/dreamt_large.json submit_v2_recommended.sh  # + 8 layers x 128 channels
 # Trillium accepts jobs of at most 24 h and run_dreamt.py cannot resume, so all
 # epochs (plus final evaluation/generation) must finish inside this one job.
 
@@ -28,8 +30,9 @@ export BLIS_JC_NT=1 BLIS_PC_NT=1 BLIS_IC_NT=1 BLIS_JR_NT=1 BLIS_IR_NT=1
 export PYTHONFAULTHANDLER=1
 
 EPOCHS="${EPOCHS:-50}"
-CONFIG=configs/dreamt_recommended.json   # EMA 0.9999 + masked + S4 dropout 0.03 + per-epoch checkpoints
-OUTPUT="/home/yxtao/links/scratch/dataset-generation-v2/runs/recommended_${SLURM_JOB_ID}"   # scratch: writable in jobs
+CONFIG="${CONFIG:-configs/dreamt_recommended.json}"   # default: EMA 0.9999 + preserve + S4 dropout 0.03 + per-epoch checkpoints
+RUN_NAME="$(basename "$CONFIG" .json)"
+OUTPUT="/home/yxtao/links/scratch/dataset-generation-v2/runs/${RUN_NAME}_${SLURM_JOB_ID}"   # scratch: writable in jobs
 
 python -c "import sys,torch,numpy;print('env',sys.version.split()[0],torch.__version__,torch.version.cuda,torch.backends.cudnn.version(),numpy.__version__,torch.cuda.get_device_name(0))"
 echo "epochs=${EPOCHS} config=${CONFIG} output=${OUTPUT}"

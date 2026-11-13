@@ -1,0 +1,36 @@
+{
+  "description": "Deduplicated dropout sweep on [-1, 1] minmax normalization. Each row differs from the base only in the two dropout probabilities; probability 0 has no location, so it appears once.",
+  "base": "configs/dreamt_recommended.json",
+  "configurations": [
+    {
+      "id": 0,
+      "name": "m11_no_dropout",
+      "input_probability": 0.0,
+      "s4_probability": 0.0
+    },
+    {
+      "id": 1,
+      "name": "m11_input_p0p03",
+      "input_probability": 0.03,
+      "s4_probability": 0.0
+    },
+    {
+      "id": 2,
+      "name": "m11_input_p0p05",
+      "input_probability": 0.05,
+      "s4_probability": 0.0
+    },
+    {
+      "id": 3,
+      "name": "m11_s4_p0p03",
+      "input_probability": 0.0,
+      "s4_probability": 0.03
+    },
+    {
+      "id": 4,
+      "name": "m11_s4_p0p05",
+      "input_probability": 0.0,
+      "s4_probability": 0.05
+    }
+  ]
+}

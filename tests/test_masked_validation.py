@@ -242,12 +242,16 @@ class MaskedEpochValidationTests(unittest.TestCase):
         self.assertAlmostEqual(result["aggregate"]["gaussian_kl_real_to_generated"],
                                numpy_kl(generated.numpy(),validator.reference.numpy(),masks.numpy()),places=12)
         structure=result["diagnostics"].pop("ibi_structure")
+        distribution={key: result["diagnostics"].pop(key) for key in ("pooled_distribution", "window_kl", "hrv")}
+        self.assertEqual(distribution["pooled_distribution"]["samples"], int(masks.sum()))
+        self.assertEqual(distribution["window_kl"]["windows"], 3)
         self.assertEqual(result["diagnostics"],dict(
             generated_samples=2250,generated_nonpositive_samples=2241,
             generated_nonpositive_fraction=2241/2250))
         self.assertEqual(structure["windows"],3)
         self.assertFalse(structure["used_for_checkpoint_selection"])
         result["diagnostics"]["ibi_structure"]=structure
+        result["diagnostics"].update(distribution)
         saved=json.loads((validator.output/"epoch_0001"/"metrics.json").read_text())
         self.assertEqual(saved["diagnostics"],result["diagnostics"])
         self.assertEqual((validator.training_output/"epoch_metrics.csv").read_text().splitlines()[0].split(","),

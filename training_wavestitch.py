@@ -15,6 +15,7 @@ from epoch_validation import create_epoch_validator
 from missing_data import masked_noise_mse
 from training_input_dropout import create_training_input_dropout
 from training_ema import create_training_ema
+from training_schedule import create_training_schedule
 
 if __name__ == "__main__":
     np.random.seed(42)
@@ -77,6 +78,7 @@ if __name__ == "__main__":
     training_input_dropout = create_training_input_dropout(device)
     validator = create_epoch_validator(preprocessor, args, model, diffusion_config, device)
     training_ema = create_training_ema(model)
+    training_schedule = create_training_schedule(optimizer, model, len(dataloader), args.epochs)
     """TRAINING"""
     for epoch in range(args.epochs):
         total_loss = 0.0
@@ -115,8 +117,10 @@ if __name__ == "__main__":
             loss.backward()
             total_loss += loss_total
             total_samples += loss_weight
+            training_schedule.before_step()
             optimizer.step()
             training_ema.update(model)
+            training_schedule.after_step()
         mean_loss = total_loss / total_samples
         print(f"epoch: {epoch + 1}, mean_loss: {mean_loss}", flush=True)
         validator.run(epoch + 1, training_ema.evaluation_model(model), mean_loss)
@@ -132,3 +136,4 @@ if __name__ == "__main__":
     if not os.path.exists(path):
         os.makedirs(path)
     torch.save(model.state_dict(), filepath)
+    training_ema.save_evaluation_weights(model, os.path.join(path, 'model_ema.pth'))

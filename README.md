@@ -17,12 +17,32 @@
 - **留出受试者**：`scripts/make_holdout_split.py` 生成 S092 只在验证集中的划分和配置。
 - 修复了原仓库测试套件中 14 个已有的失败（测试未随代码更新），统一了环境说明。
 
+v2.1 按 [诊断与修改指南（精简版）](docs/诊断与修改指南_精简版.md) 继续修改（原始数据不改，归一化沿用 [−1,1]，缺失值策略沿用 `preserve`）：
+
+- **任意受试者评估**：`scripts/evaluate_subject_windows.py --subjects S092 S002 ...`，结果可用 `plot_s092_all_windows_kde.py --folder subject_<SID>` 画图。
+- **条件有效性验证**：`scripts/check_condition_effect.py`，判断睡眠阶段和人口学条件是否足以引导生成。
+- **评估指标扩充**：每轮报告合并 W1、KS、按睡眠阶段的 W1 和心率变异性；`validation.selection_metric` 可额外按 W1 / KS / composite 保存 checkpoint。
+- **学习率调度与梯度裁剪**（`training_schedule`）、**模型尺寸可配置**（`model`），训练结束额外保存 `model_ema.pth`。
+- 配置：`configs/dreamt_b1.json`（推荐配置 + 学习率调度 + W1 选模）、`configs/dreamt_large.json`（再加 8 层、128 通道）；去重 sweep：`configs/sweep_v3.json` + `submit_sweep_v3.sh`。
+
 推荐配置的重训（Trillium GPU 子集群，登录节点 `trig-login01`，在仓库目录下提交）：
 
 ```bash
 sbatch submit_v2_gpu_tests.sh                              # 先在 GPU 上跑完整测试
-sbatch submit_v2_recommended.sh                            # EMA + masked + S4 dropout 0.03，默认 50 epochs
+sbatch submit_v2_recommended.sh                            # EMA + preserve + S4 dropout 0.03，默认 50 epochs
+sbatch --export=ALL,CONFIG=configs/dreamt_b1.json submit_v2_recommended.sh     # 加学习率调度与 W1 选模
+sbatch --export=ALL,CONFIG=configs/dreamt_large.json submit_v2_recommended.sh  # 再加大模型
+sbatch submit_sweep_v3.sh                                  # 去重 dropout sweep（5 个数组任务）
 sbatch --export=ALL,EPOCHS=100 submit_v2_recommended.sh    # 仅当 100 轮能在 24 小时内跑完
+```
+
+评估与条件检查（登录节点上用 `--check-only` 先检查数据；正式运行需要 GPU）：
+
+```bash
+python scripts/evaluate_subject_windows.py --checkpoint RUN/training/best_kl_model.pth \
+    --config RUN/workspace/dataset_config.json --subjects S092 S002 S010 --output-dir OUT_EVAL
+python scripts/check_condition_effect.py --checkpoint RUN/training/best_kl_model.pth \
+    --config RUN/workspace/dataset_config.json --subject S092 --subjects S092 S002 S010 S020 --output-dir OUT_COND
 ```
 
 - Trillium 单个作业最长 24 小时，而 `run_dreamt.py` 不支持断点续训，所有 epoch 和最后的评估必须在一个作业内完成。可用 `sacct -j <旧作业号> --format=JobID,Elapsed` 查看以往 50 轮的耗时再决定轮数。

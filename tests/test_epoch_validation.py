@@ -414,6 +414,39 @@ class EpochCoordinatorTests(unittest.TestCase):
             self.assertEqual(report["early_stopping"]["bad_epochs"], [0, 0, 1, 0][epoch-1])
             self.assertEqual(set(validator.summary()["best_checkpoints"]), {"kl"})
 
+    def test_optional_w1_selection_adds_checkpoint_and_keeps_kl_selection(self):
+        config = {**self.config, "validation": {**self.config.get("validation", {}), "selection_metric": "w1"},
+                  "early_stopping": {"smoothing_window": 1, "selection_mode": "current"}}
+        validator = self.make_validator(config=config)
+        kl_values, w1_values = (5., 4., 6., 3.), (90., 120., 60., 70.)
+        for epoch, (kl, w1) in enumerate(zip(kl_values, w1_values), 1):
+            with torch.no_grad():
+                self.model[0].weight.fill_(epoch)
+            measured = dict(aggregate=dict(gaussian_kl_real_to_generated=kl),
+                            diagnostics=dict(pooled_distribution=dict(pooled_w1_ms=w1, pooled_ks=.1),
+                                             window_kl=dict(median=kl)))
+            with mock.patch.object(validator, "_generate", return_value=(measured, {}, [])), \
+                 contextlib.redirect_stdout(io.StringIO()):
+                report = validator.run(epoch, self.model, .1)
+            self.assertEqual(report["selection"]["metric"], "w1")
+            self.assertEqual(report["selection"]["improved"], epoch in (1, 3))
+        best = validator.summary()["best_checkpoints"]
+        self.assertEqual(best["w1"]["epoch"], 3)
+        self.assertEqual(best["w1"]["value"], 60.)
+        saved = torch.load(best["w1"]["checkpoint"], map_location="cpu", weights_only=True)
+        self.assertEqual(saved["0.weight"].item(), 3)
+        self.assertEqual(best["kl"]["epoch"], 4)
+        with (self.output.parent / "epoch_metrics.csv").open(newline="", encoding="utf-8") as stream:
+            rows = list(csv.DictReader(stream))
+        self.assertEqual([float(row["pooled_w1_ms"]) for row in rows], list(w1_values))
+
+    def test_selection_metric_option_validation(self):
+        self.assertNotIn("selection_metric", coordinator.validation_options({"validation": {"selection_metric": "kl"}}))
+        self.assertEqual(coordinator.validation_options({"validation": {"selection_metric": "composite"}})["selection_metric"],
+                         "composite")
+        with self.assertRaises(ValueError):
+            coordinator.validation_options({"validation": {"selection_metric": "mse"}})
+
     def test_smoothed_checkpoint_warmup_and_current_weights(self):
         validator = self.make_validator(config={**self.config, "early_stopping": {"smoothing_window": 3}})
         # Epoch four improves SMA 5 -> 4 while raw KL rises 0 -> 9.
@@ -449,7 +482,8 @@ class EpochCoordinatorTests(unittest.TestCase):
             self.assertEqual(reader.fieldnames, [
                 "epoch", "train_mean_loss", "gaussian_kl_real_to_generated",
                 "smoothed_gaussian_kl_real_to_generated", "validation_seconds",
-                "smoothing_ready", "metric_improvement", "early_stopping_bad_epochs", "stopped_early"])
+                "smoothing_ready", "metric_improvement", "early_stopping_bad_epochs", "stopped_early",
+                "pooled_w1_ms", "pooled_ks", "window_kl_median"])
         self.assertEqual(rows[0]["smoothed_gaussian_kl_real_to_generated"], "")
         self.assertEqual(rows[0]["smoothing_ready"], "False")
         self.assertEqual(float(rows[3]["smoothed_gaussian_kl_real_to_generated"]), 4.)

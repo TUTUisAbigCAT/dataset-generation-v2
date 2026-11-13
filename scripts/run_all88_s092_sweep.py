@@ -41,7 +41,8 @@ PROTOCOL = dict(mode='all_subjects_train_single_subject_eval', subject='S092', e
 SNAPSHOT_SOURCES = ('training_wavestitch.py', 'training_utils.py', 'TSImputers/SSSDS4Imputer.py',
     'TSImputers/S4Model.py', 'data_utils.py', 'epoch_validation.py', 'validation_sampling.py',
     'validation_metrics.py', 'diffusion_schedule.py', 'signal_normalization.py',
-    'training_input_dropout.py', 'training_ema.py', 'ibi_structure_metrics.py', 's4_dropout_config.py', 'host_runtime.py', 'scripts/evaluate_original_sampler.py')
+    'training_input_dropout.py', 'training_ema.py', 'ibi_structure_metrics.py', 's4_dropout_config.py', 'host_runtime.py',
+    'training_schedule.py', 'model_config.py', 'distribution_metrics.py', 'hrv_metrics.py', 'scripts/evaluate_original_sampler.py')
 
 
 def validate_configuration(row):

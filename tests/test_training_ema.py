@@ -27,6 +27,7 @@ from scripts.verify_upstream_boundary import (
     remove_training_input_dropout_edits)
 from training_input_dropout import TrainingInputDropout
 from tests.test_training_input_dropout import training_loop
+NO_SCHEDULE = __import__('types').SimpleNamespace(before_step=lambda: None, after_step=lambda: None)
 
 
 class BufferedModel(torch.nn.Module):
@@ -129,7 +130,7 @@ class EMATrainingLoopTests(unittest.TestCase):
                              diffusion_config={"T": 3, "alpha_bars": torch.tensor([[.9], [.5], [.1]])},
                              non_hier_cols=torch.tensor([0]), randint=torch.randint, normal=torch.normal,
                              sqrt=torch.sqrt, training_input_dropout=TrainingInputDropout(dict(probability=0.), "cpu"),
-                             training_ema=ema, validator=SimpleNamespace(run=run, should_stop=False))
+                             training_ema=ema, training_schedule=NO_SCHEDULE, validator=SimpleNamespace(run=run, should_stop=False))
             exec(training_loop(source), namespace)
             rng = torch.random.get_rng_state().clone()
         return model, ema, losses, evaluated, rng

@@ -31,7 +31,10 @@ EPOCH_METRIC_FIELDS = (
     "epoch", "train_mean_loss", "gaussian_kl_real_to_generated",
     "smoothed_gaussian_kl_real_to_generated", "validation_seconds",
     "smoothing_ready", "metric_improvement", "early_stopping_bad_epochs", "stopped_early",
+    "pooled_w1_ms", "pooled_ks", "window_kl_median",
 )
+# Optional additional checkpoint selection (KL selection and early stopping stay unchanged).
+SELECTION_METRICS = ("kl", "w1", "ks", "composite")
 CURRENT_EPOCH_METRIC_FIELDS = tuple(
     field for field in EPOCH_METRIC_FIELDS
     if field not in ("smoothed_gaussian_kl_real_to_generated", "smoothing_ready"))
@@ -146,7 +149,7 @@ def validation_options(config):
     if not isinstance(values, dict):
         raise ValueError("validation must be a JSON object")
     unknown = set(values) - (set(DEFAULT_VALIDATION) | {"reference_mask_policy", "save_artifacts",
-                                                       "save_epoch_checkpoints"})
+                                                       "save_epoch_checkpoints", "selection_metric"})
     if unknown:
         raise ValueError(f"Unknown validation options: {sorted(unknown)}")
     result = {**DEFAULT_VALIDATION, **values}
@@ -173,6 +176,12 @@ def validation_options(config):
         raise ValueError('validation.save_artifacts must be boolean')
     if 'save_epoch_checkpoints' in result and not isinstance(result['save_epoch_checkpoints'], bool):
         raise ValueError('validation.save_epoch_checkpoints must be boolean')
+    selection = result.get("selection_metric", "kl")
+    if not isinstance(selection, str) or selection not in SELECTION_METRICS:
+        raise ValueError("validation.selection_metric must be one of " + ", ".join(SELECTION_METRICS))
+    # Omit the default to preserve the existing protocol and options payload.
+    if selection == "kl":
+        result.pop("selection_metric", None)
     return result
 
 
@@ -400,6 +409,31 @@ class EpochValidator:
                 extra_sampling=False, directory='epoch_NNNN')
         _save_json(self.output / "protocol.json", self.protocol)
 
+    def _distribution_diagnostics(self, generated, reference, mask, window_kl):
+        """Pooled W1/KS, per-stage W1, window-KL quantiles and HRV; diagnostics only
+        unless validation.selection_metric selects an additional checkpoint."""
+        from distribution_metrics import pooled_distribution_metrics, stage_per_sample, window_kl_summary
+        from hrv_metrics import summarize_hrv
+        stages = None
+        if self.windows.shape[2] >= 5:
+            try:
+                stages = stage_per_sample(self.windows[:, :, 1:5].numpy())
+            except ValueError:
+                stages = None
+        return dict(pooled_distribution=pooled_distribution_metrics(generated, reference, mask, stages),
+                    window_kl=window_kl_summary(window_kl),
+                    hrv=summarize_hrv(generated, reference))
+
+    def _selection_value(self, aggregate, diagnostics):
+        from distribution_metrics import composite_score
+        name = self.options.get("selection_metric", "kl")
+        pooled = diagnostics["pooled_distribution"]
+        if name == "w1":
+            return pooled["pooled_w1_ms"]
+        if name == "ks":
+            return pooled["pooled_ks"]
+        return composite_score(aggregate["gaussian_kl_real_to_generated"], pooled["pooled_w1_ms"], pooled["pooled_ks"])
+
     def _generate(self, training_model):
         # Reconstruct afresh to keep S4 caches and any future eval-state mutation
         # away from the live training model. Preserve its original seed-42 buffers.
@@ -417,6 +451,7 @@ class EpochValidator:
         generated_nonpositive = torch.zeros((), dtype=torch.int64, device=self.device)
         sampler_reports = []
         structure_parts = []
+        window_kl_parts = []
         artifact_waveforms, artifact_statistics = [], defaultdict(list)
         for start in range(0, len(self.windows), self.options["batch_size"]):
             clean = self.windows[start:start+self.options["batch_size"]].to(self.device)
@@ -441,6 +476,7 @@ class EpochValidator:
             generated_samples += generated_seconds.numel()
             generated_nonpositive += (generated_seconds <= 0).sum()
             structure_parts.append(generated_seconds.detach().cpu().numpy())
+            window_kl_parts.append(statistics["gaussian_kl_real_to_generated"].detach().cpu().numpy())
             sampler_reports.append(metadata)
         metrics = accumulator.finalize()
         nonpositive_samples = int(generated_nonpositive)
@@ -450,9 +486,12 @@ class EpochValidator:
             generated_nonpositive_fraction=nonpositive_samples/generated_samples)
         # Diagnostics only (host copy of the generated windows); never used for selection.
         from ibi_structure_metrics import summarize_windows
-        metrics["diagnostics"]["ibi_structure"] = summarize_windows(
-            np.concatenate(structure_parts, axis=0), self.reference.numpy(),
-            None if self.reference_mask is None else self.reference_mask.numpy())
+        generated_all = np.concatenate(structure_parts, axis=0)
+        reference_all = self.reference.numpy()
+        mask_all = None if self.reference_mask is None else self.reference_mask.numpy()
+        metrics["diagnostics"]["ibi_structure"] = summarize_windows(generated_all, reference_all, mask_all)
+        metrics["diagnostics"].update(self._distribution_diagnostics(
+            generated_all, reference_all, mask_all, np.concatenate(window_kl_parts)))
         if self.save_artifacts:
             metrics['_artifact_payload'] = dict(
                 generated_seconds=np.concatenate(artifact_waveforms, axis=0),
@@ -523,6 +562,23 @@ class EpochValidator:
             self.best_checkpoints[name] = dict(
                 **checkpoint_metrics, checkpoint=str(checkpoint),
                 checkpoint_sha256=hashlib.sha256(checkpoint.read_bytes()).hexdigest())
+        selection = None
+        selection_name = self.options.get("selection_metric", "kl")
+        if selection_name != "kl":
+            # Additional opt-in selection; best_kl_model.pth and early stopping are unchanged.
+            value = float(self._selection_value(aggregate, metrics["diagnostics"]))
+            previous = self.best_checkpoints.get(selection_name)
+            improved = previous is None or value < previous["value"]
+            if improved:
+                checkpoint = self.training_output / f"best_{selection_name}_model.pth"
+                temporary = checkpoint.with_suffix(".pth.tmp")
+                torch.save(training_model.state_dict(), temporary)
+                temporary.replace(checkpoint)
+                self.best_checkpoints[selection_name] = dict(
+                    epoch=epoch, metric=selection_name, selection_rule="current_minimum", value=value,
+                    checkpoint=str(checkpoint),
+                    checkpoint_sha256=hashlib.sha256(checkpoint.read_bytes()).hexdigest())
+            selection = dict(metric=selection_name, value=value, improved=improved)
         report = dict(status="completed", epoch=epoch, train_mean_loss=float(train_mean_loss),
                       aggregate=aggregate,
                       diagnostics=metrics.get("diagnostics", {}),
@@ -533,6 +589,8 @@ class EpochValidator:
             report['artifacts'] = artifacts
         if epoch_checkpoint is not None:
             report['epoch_checkpoint'] = epoch_checkpoint
+        if selection is not None:
+            report['selection'] = selection
         _save_json(epoch_dir / "metrics.json", report)
         self.reports.append(report)
         # Rewriting a short history avoids partial CSV rows after a failed append.
@@ -542,11 +600,15 @@ class EpochValidator:
             writer = csv.DictWriter(stream, fieldnames=CURRENT_EPOCH_METRIC_FIELDS if current_mode else EPOCH_METRIC_FIELDS)
             writer.writeheader()
             for row in self.reports:
+                diagnostics = row.get("diagnostics", {})
                 csv_row = dict(epoch=row["epoch"], train_mean_loss=row["train_mean_loss"],
                                **row["aggregate"], validation_seconds=row["validation_seconds"],
                                metric_improvement=row["early_stopping"]["metric_improvement"],
                                early_stopping_bad_epochs=row["early_stopping"]["bad_epochs"],
-                               stopped_early=row["early_stopping"]["stopped_early"])
+                               stopped_early=row["early_stopping"]["stopped_early"],
+                               pooled_w1_ms=diagnostics.get("pooled_distribution", {}).get("pooled_w1_ms"),
+                               pooled_ks=diagnostics.get("pooled_distribution", {}).get("pooled_ks"),
+                               window_kl_median=diagnostics.get("window_kl", {}).get("median"))
                 if not current_mode:
                     csv_row.update(
                         {"smoothed_" + key: value for key, value in row["early_stopping"]["smoothed_metrics"].items()},

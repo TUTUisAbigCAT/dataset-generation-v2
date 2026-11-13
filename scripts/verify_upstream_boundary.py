@@ -278,16 +278,41 @@ EMA_EDITS = [
 ]
 
 
-def expected_training_source(original, *, include_input_dropout=True, include_ema=None):
+# Five exact opt-in additions on top of the EMA edits: learning-rate schedule
+# and gradient clipping around the unchanged optimizer.step() line, plus one
+# extra file (model_ema.pth) after the unchanged final model.pth save. With the
+# default configuration every added call is an exact no-op.
+TRAINING_SCHEDULE_EDITS = [
+    ("from training_ema import create_training_ema",
+     "from training_ema import create_training_ema\n"
+     "from training_schedule import create_training_schedule"),
+    ("    training_ema = create_training_ema(model)",
+     "    training_ema = create_training_ema(model)\n"
+     "    training_schedule = create_training_schedule(optimizer, model, len(dataloader), args.epochs)"),
+    ("            total_samples += loss_weight\n            optimizer.step()",
+     "            total_samples += loss_weight\n            training_schedule.before_step()\n            optimizer.step()"),
+    ("            training_ema.update(model)",
+     "            training_ema.update(model)\n            training_schedule.after_step()"),
+    ("    torch.save(model.state_dict(), filepath)",
+     "    torch.save(model.state_dict(), filepath)\n"
+     "    training_ema.save_evaluation_weights(model, os.path.join(path, 'model_ema.pth'))"),
+]
+
+
+def expected_training_source(original, *, include_input_dropout=True, include_ema=None, include_schedule=None):
     """Upstream source plus the exact allowlisted edits.
 
-    include_ema defaults to include_input_dropout: the EMA edits are anchored on
-    the input-dropout additions, so they are only defined on top of them.
+    include_ema defaults to include_input_dropout and include_schedule defaults
+    to include_ema: each group is anchored on the previous group's additions.
     """
     if include_ema is None:
         include_ema = include_input_dropout
+    if include_schedule is None:
+        include_schedule = include_ema
     if include_ema and not include_input_dropout:
         raise ValueError("EMA edits are defined only on top of the input-dropout edits")
+    if include_schedule and not include_ema:
+        raise ValueError("Schedule edits are defined only on top of the EMA edits")
     newline = b"\r\n" if b"\r\n" in original else b"\n"
     start = original.index(b"    df = preprocessor.df_cleaned")
     end = original.index(b"    model = fetchModel", start)
@@ -297,6 +322,8 @@ def expected_training_source(original, *, include_input_dropout=True, include_em
         edits = edits + TRAINING_INPUT_DROPOUT_EDITS
     if include_ema:
         edits = edits + EMA_EDITS
+    if include_schedule:
+        edits = edits + TRAINING_SCHEDULE_EDITS
     for before, after in edits:
         before_bytes = before.encode().replace(b"\n", newline)
         after_bytes = after.encode().replace(b"\n", newline)
@@ -316,20 +343,45 @@ def _reverse_exact_edits(source, edits, newline, label):
     return result
 
 
+def remove_training_schedule_edits(source):
+    """Reverse only the five exact schedule/EMA-save additions.
+
+    Sources without them (EMA, input-dropout or prior adapters) are returned
+    unchanged. Partial, duplicated or rewritten additions are rejected.
+    """
+    if not isinstance(source, bytes):
+        raise TypeError("Training source must be bytes")
+    original = (UPSTREAM / "training_wavestitch.py").read_bytes()
+    without_schedule = expected_training_source(original, include_schedule=False)
+    earlier = (without_schedule,
+               expected_training_source(original, include_input_dropout=True, include_ema=False),
+               expected_training_source(original, include_input_dropout=False))
+    if source in earlier:
+        return source
+    if source != expected_training_source(original):
+        raise ValueError("Training source differs beyond the five exact schedule additions")
+    newline = b"\r\n" if b"\r\n" in original else b"\n"
+    result = _reverse_exact_edits(source, TRAINING_SCHEDULE_EDITS, newline, "schedule")
+    if result != without_schedule:
+        raise ValueError("Training source changed beyond the authorized schedule additions")
+    return result
+
+
 def remove_training_ema_edits(source):
-    """Reverse only the four exact EMA additions, with full-source identity checks.
+    """Reverse the schedule additions, then the four exact EMA additions.
 
     A source without EMA edits (input-dropout adapter or the earlier prior) is
     returned unchanged. Partial, duplicated or rewritten EMA edits are rejected.
     """
     if not isinstance(source, bytes):
         raise TypeError("Training source must be bytes")
+    source = remove_training_schedule_edits(source)
     original = (UPSTREAM / "training_wavestitch.py").read_bytes()
     without_ema = expected_training_source(original, include_input_dropout=True, include_ema=False)
     prior = expected_training_source(original, include_input_dropout=False)
     if source in (without_ema, prior):
         return source
-    if source != expected_training_source(original):
+    if source != expected_training_source(original, include_schedule=False):
         raise ValueError("Training source differs beyond the four exact EMA additions")
     newline = b"\r\n" if b"\r\n" in original else b"\n"
     result = _reverse_exact_edits(source, EMA_EDITS, newline, "EMA")
@@ -431,12 +483,12 @@ def main():
         assert (ROOT / name).read_bytes() == expected_core_source(name, (UPSTREAM / name).read_bytes()), f"Imported core exceeds exact correction allowlist: {name}"
     original = (UPSTREAM / "training_wavestitch.py").read_bytes()
     actual = (ROOT / "training_wavestitch.py").read_bytes()
-    assert actual == expected_training_source(original), "Training modifications exceeded the exact data/device/reporting/input-augmentation/EMA allowlist"
+    assert actual == expected_training_source(original), "Training modifications exceeded the exact data/device/reporting/input-augmentation/EMA/schedule allowlist"
 
     # Reverse exactly the reviewed device/reporting edits to verify the unchanged training
     # algorithm. The removed mask conversion needs its original insertion point.
     normalized = actual.decode().replace("\r\n", "\n")
-    for before, after in reversed(CUDA_DEVICE_EDITS + DIFFUSION_SCHEDULE_EDITS + EPOCH_REPORTING_EDITS + EARLY_STOPPING_EDITS + MISSING_DATA_EDITS + TRAINING_INPUT_DROPOUT_EDITS + EMA_EDITS):
+    for before, after in reversed(CUDA_DEVICE_EDITS + DIFFUSION_SCHEDULE_EDITS + EPOCH_REPORTING_EDITS + EARLY_STOPPING_EDITS + MISSING_DATA_EDITS + TRAINING_INPUT_DROPOUT_EDITS + EMA_EDITS + TRAINING_SCHEDULE_EDITS):
         if not after:
             anchor = "            conditional_mask[:, :, non_hier_cols] = 0\n"
             assert normalized.count(anchor) == 1
@@ -477,6 +529,9 @@ def main():
         training_input_dropout_supported=True,
         training_ema_edits=[dict(before=before, after=after) for before, after in EMA_EDITS],
         training_ema_adapter_sha256=sha(ROOT / "training_ema.py"),
+        training_schedule_edits=[dict(before=before, after=after) for before, after in TRAINING_SCHEDULE_EDITS],
+        training_schedule_adapter_sha256=sha(ROOT / "training_schedule.py"),
+        optional_training_schedule="Opt-in warm-up/cosine learning rate and gradient clipping (training_schedule); defaults are exact no-ops; model_ema.pth is written after the unchanged model.pth save",
         optional_training_ema="Opt-in parameter EMA (training_ema.decay); used only for epoch validation and validator checkpoints; decay=0 exact no-op",
         training_input_dropout_activation="Explicit training_input_dropout.probability in frozen JSON; source audit does not run training",
         optional_training_input_dropout="Post-noising IBI channel only, normalized zero fill, no kept-value scaling; independent device generator; targets/loss unchanged; p=0 exact identity with no random draws",

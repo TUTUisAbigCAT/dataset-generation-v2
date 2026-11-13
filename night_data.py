@@ -60,12 +60,14 @@ def _check_stage_conditions(path, record, downsample_rate):
     return stages.astype(np.int64, copy=False), raw_first.astype(np.int64, copy=False)
 
 
-def prepare_night(preprocessor, subject="S092"):
+def prepare_night(preprocessor, subject="S092", *, allow_time_gaps=False):
     """Prepare all complete stored epochs without applying training max_epochs.
 
     Callers supply the selected training preprocessor and its fitted scaler.
     This function preserves that object's scaler, caches and data identity.
-    Unknown/inconsistent stage labels or known source-time gaps are errors.
+    Unknown/inconsistent stage labels are errors. Known source-time gaps are
+    errors unless allow_time_gaps=True (window evaluation), which records them;
+    callers must then exclude windows that cross a gap.
     Invalid reference IBI is reported but is not used to restrict conditions.
     """
     role, filename = _resolve_subject(preprocessor, subject)
@@ -79,7 +81,7 @@ def prepare_night(preprocessor, subject="S092"):
     stages, raw_stages = _check_stage_conditions(Path(preprocessor.data_dir) / filename, record,
                                                 preprocessor.downsample_rate)
     gaps = np.flatnonzero(~record["adjacent"])
-    if gaps.size:
+    if gaps.size and not allow_time_gaps:
         raise ValueError("Known source-time gaps after epoch indices "
                          + repr(gaps[:20].tolist()) + "; a continuous whole night cannot be generated")
 
@@ -128,6 +130,7 @@ def prepare_night(preprocessor, subject="S092"):
         reference_nonfinite_samples=int((~finite).sum()),
         reference_negative_samples=int((finite & (reference < 0)).sum()),
         reference_valid_epochs=int(record["valid_epochs"].sum()),
+        known_time_gaps_after_epochs=gaps.tolist(),
         source_file_sha256=record["file_sha256"], source_fs=record["source_fs"],
         source_multiplier=preprocessor.multiplier, source_downsample_rate=preprocessor.downsample_rate,
         output_fs=TARGET_FS, output_units="seconds", output_multiplier=1.0, output_downsample_rate=1,

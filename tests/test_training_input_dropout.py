@@ -29,6 +29,7 @@ from training_input_dropout import input_dropout_options, create_training_input_
 from scripts import run_dreamt
 from scripts.verify_upstream_boundary import (
     expected_training_source, remove_training_input_dropout_edits, TRAINING_INPUT_DROPOUT_EDITS)
+NO_SCHEDULE = __import__('types').SimpleNamespace(before_step=lambda: None, after_step=lambda: None)
 
 
 def training_loop(source):
@@ -173,7 +174,7 @@ class InputDropoutTests(unittest.TestCase):
                 device=torch.device("cpu"),args=SimpleNamespace(epochs=2),dataloader=dataloader,
                 diffusion_config={"T":3,"alpha_bars":torch.tensor([[.9],[.5],[.1]])},
                 non_hier_cols=torch.tensor([0]),randint=randint,normal=normal,sqrt=torch.sqrt,
-                training_input_dropout=adapter,training_ema=TrainingEMA(model,ema_decay),
+                training_input_dropout=adapter,training_ema=TrainingEMA(model,ema_decay), training_schedule=NO_SCHEDULE,
                 validator=SimpleNamespace(run=lambda *args:None,should_stop=False))
             exec(training_loop(source),namespace)
             return dict(parameters={key:value.detach().clone() for key,value in model.state_dict().items()},
@@ -267,7 +268,7 @@ class InputDropoutTests(unittest.TestCase):
                         device=torch.device("cpu"),args=args,dataloader=batches,
                         diffusion_config=build_diffusion_config(args),non_hier_cols=torch.tensor([0]),
                         randint=torch.randint,normal=torch.normal,sqrt=torch.sqrt,training_input_dropout=adapter,
-                        training_ema=TrainingEMA(model,0.),
+                        training_ema=TrainingEMA(model,0.), training_schedule=NO_SCHEDULE,
                         validator=SimpleNamespace(run=lambda *args:None,should_stop=False))
                     exec(training_loop((ROOT/"training_wavestitch.py").read_bytes()),scope)
                     hook.remove()

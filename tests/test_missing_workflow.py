@@ -28,6 +28,7 @@ from scripts import run_missing_value_ablation as ablation
 from training_utils import fetchModel
 from training_ema import TrainingEMA
 from diffusion_schedule import build_diffusion_config
+NO_SCHEDULE = __import__('types').SimpleNamespace(before_step=lambda: None, after_step=lambda: None)
 
 
 def fixture(directory):
@@ -145,7 +146,7 @@ class MissingWorkflowTests(unittest.TestCase):
                         device=torch.device("cpu"), args=args, dataloader=batches,
                         diffusion_config=build_diffusion_config(args), non_hier_cols=torch.tensor([0]),
                         randint=torch.randint, normal=torch.normal, sqrt=torch.sqrt, masked_noise_mse=tracked,
-                        training_input_dropout=lambda batch: batch, training_ema=TrainingEMA(model, 0.),
+                        training_input_dropout=lambda batch: batch, training_ema=TrainingEMA(model, 0.), training_schedule=NO_SCHEDULE,
                         validator=SimpleNamespace(run=validate, should_stop=False))
                     exec(code, scope)
                 self.assertEqual(len(reports), 2)

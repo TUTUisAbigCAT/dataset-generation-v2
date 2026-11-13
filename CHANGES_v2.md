@@ -51,3 +51,32 @@
 - `python -B -m unittest discover -s tests`：654 个测试全部通过，跳过 20 个（全部需要真实 GPU）。基线为 630 个测试、14 个报错。
 - `python scripts/verify_upstream_boundary.py`：通过，`training_ema_edits` 共 4 处，撤销允许的编辑后训练循环与上游一致。
 - 以上验证使用 CPU 版 torch 2.3.1（conda-forge）。需要 GPU 的测试和真实训练请在 Fir 的 GPU 节点上运行：`python -B -m unittest discover -s tests -v` 和 `python scripts/check_cuda.py`。
+
+## v2.1：按《诊断与修改指南（精简版）》的修改
+
+依据 [docs/诊断与修改指南_精简版.md](docs/诊断与修改指南_精简版.md)。范围：原始数据不改；归一化沿用 [−1,1]；缺失值策略沿用 `preserve`；暂不处理随机种子问题。所有新选项默认关闭，默认配置下训练与之前逐位一致。
+
+### 评估
+
+- **任意受试者评估**：新增 `scripts/evaluate_subject_windows.py` 和共享模块 `subject_windows.py`。对任意配置中的受试者，按 30/60/90/120 s 步长取 2 分钟窗口，逐窗口独立生成并与真实 IBI 比较；输出可直接用 `plot_s092_all_windows_kde.py --folder subject_<SID>` 画图，并汇总到 `subjects_summary.csv`。`night_data.prepare_night` 新增 `allow_time_gaps`（默认 False），评估时跨越时间空缺的窗口会被排除。
+- **指标扩充**：新增 `distribution_metrics.py`（合并 W1、KS、按睡眠阶段的 W1、均值偏差、标准差比、逐窗口 KL 的中位数 / 90% 分位数 / 超过 1 的比例、composite）和 `hrv_metrics.py`（从 25 Hz 序列读出逐拍间期，计算 RMSSD、SDNN、pNN50、平均心率）。每轮验证写入 `metrics.json` 的 `diagnostics.pooled_distribution`、`window_kl`、`hrv`；`epoch_metrics.csv` 末尾新增 `pooled_w1_ms`、`pooled_ks`、`window_kl_median` 三列。
+- **可配置的挑选指标**：`validation.selection_metric` 可选 `kl`（默认，不写入配置）、`w1`、`ks`、`composite`。非 `kl` 时额外保存 `best_<metric>_model.pth` 并生成对应的 manifest；`best_kl_model.pth` 和早停逻辑不变。
+- **条件有效性验证**：新增 `scripts/check_condition_effect.py`，四项检查：真实数据中条件能解释的比例（R²）、换睡眠阶段、打乱阶段条件（按真实阶段对齐的 W1）、互换人口学信息的距离矩阵；按指南中的阈值给出判定，并输出 `condition_checks.png`。
+
+### 训练
+
+- **学习率调度与梯度裁剪**：新增 `training_schedule.py`，配置块 `training_schedule`（`warmup_steps`、`decay`: none/cosine、`min_lr_ratio`、`clip_grad_norm`）。`training_wavestitch.py` 新增 5 处白名单编辑（`TRAINING_SCHEDULE_EDITS`）：`optimizer.step()` 这一行原文不变，前面加梯度裁剪，后面更新学习率；`model.pth` 保存之后额外保存 `model_ema.pth`。新增 `remove_training_schedule_edits`，旧的反向函数照常可用。
+- **模型尺寸可配置**：新增 `model_config.py`，配置块 `model`（`num_res_layers`、`res_channels`、`skip_channels`、`s4_dstate`）。没有该配置块时训练命令与之前完全相同；`run_simulation.py` 会核对配置是否真正传入训练，`night_checkpoint.load_inference_config` 也按该配置块构建推理模型。
+- **EMA 最终权重**：`TrainingEMA.save_evaluation_weights` 在训练结束时写出 `saved_models/<dataset>/model_ema.pth`（EMA 关闭时与 `model.pth` 相同），运行报告记录其路径和 SHA256。
+- 新模块已登记到 `run_dreamt.py` 的源码快照、`run_all88_s092_sweep.py` 的 `SNAPSHOT_SOURCES` 和 `run_simulation.py` 的源码哈希清单。
+
+### 配置与作业
+
+- `configs/dreamt_recommended.json`：缺失值策略改回 `preserve`；保持 [−1,1]、S4 dropout 0.03、EMA 0.9999、逐轮 checkpoint。
+- 新增 `configs/dreamt_b1.json`（推荐配置 + 预热 2000 步的余弦衰减、梯度裁剪 1.0、W1 选模）和 `configs/dreamt_large.json`（B1 + 8 层、128 通道）。
+- `submit_v2_recommended.sh` 可用 `CONFIG` 环境变量选择配置，输出目录按配置名命名。
+- 新增去重 sweep：`configs/sweep_v3.json`（[−1,1] 上 5 个互不重复的 dropout 设置）、`scripts/sweep_config.py`（拒绝等效重复项和非 [−1,1] 的基础配置）、`submit_sweep_v3.sh`（Slurm 数组作业）。
+
+### 测试
+
+新增 `test_distribution_metrics`、`test_training_schedule`、`test_subject_window_evaluation`、`test_sweep_config`，并更新了相关测试。CPU 上 690 个测试全部通过（20 个需要 GPU 的测试跳过）。

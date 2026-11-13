@@ -31,7 +31,7 @@
     "subject": "S092",
     "expected_subjects": 88
   },
-  "missing_value_policy": "masked",
+  "missing_value_policy": "preserve",
   "signal_normalization": {
     "method": "minmax",
     "min_seconds": 0.0,
